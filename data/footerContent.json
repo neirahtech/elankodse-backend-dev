@@ -1,0 +1,59 @@
+{
+  "authorName": "இளங்கோ",
+  "authorTitle": "Writer",
+  "contactEmail": "elanko@rogers.com",
+  "contactTitle": "தொடர்புக்கு",
+  "contactLabel": "எழுத்தாளர் தொடர்பு:",
+  "socialLinks": {
+    "facebook": {
+      "url": "#",
+      "visible": true
+    },
+    "twitter": {
+      "url": "#",
+      "visible": false
+    },
+    "instagram": {
+      "url": "#",
+      "visible": true
+    },
+    "youtube": {
+      "url": "#",
+      "visible": true
+    },
+    "linkedin": {
+      "url": "#",
+      "visible": false
+    },
+    "telegram": {
+      "url": "#",
+      "visible": false
+    },
+    "whatsapp": {
+      "url": "#",
+      "visible": true
+    },
+    "github": {
+      "url": "#",
+      "visible": false
+    },
+    "email": {
+      "url": "#",
+      "visible": true
+    },
+    "rss": {
+      "url": "#",
+      "visible": false
+    },
+    "website": {
+      "url": "#",
+      "visible": true
+    },
+    "tiktok": {
+      "url": "#",
+      "visible": false
+    }
+  },
+  "newsletterTitle": "பதிவுகளை உடனடியாக பெற",
+  "updatedAt": "2025-07-28T12:00:32.474Z"
+}
