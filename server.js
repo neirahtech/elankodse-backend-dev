@@ -329,7 +329,7 @@ connectDB().then(async () => {
     console.log(`🌐 Port: ${PORT}`);
     console.log(`📍 Environment: ${config.nodeEnv}`);
     console.log(`🔗 Server URL: ${config.getServerUrl()}`);
-    console.log(`🛡️  CORS Origins: ${config.allowedOrigins.join(', ')}`);
+    console.log(`🛡️  CORS Origins: ${getAllowedOrigins().join(', ')}`);
     console.log('');
     console.log('🚨 OPTIMIZATIONS ACTIVE:');
     console.log('  ✅ No automatic Blogger sync on startup');
