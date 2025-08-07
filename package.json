@@ -10,9 +10,8 @@
     "build": "echo 'No build step required for Node.js'",
     "backup": "node scripts/backup.js",
     "sync": "node scripts/sync-blogger.js",
-    "populate-cover-images": "node scripts/populate-cover-images.js",
-    "test-cors": "node test-cors.js",
-    "check-db": "node scripts/check-db-connections.js",
+    "batch-migrate-images": "node scripts/batch-migrate-images.js",
+    "continue-migration": "node scripts/continue-migration.js",
     "deploy:prod": "NODE_ENV=production npm start"
   },
   "dependencies": {

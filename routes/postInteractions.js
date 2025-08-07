@@ -2,6 +2,7 @@ import express from 'express';
 import auth from '../middleware/auth.js';
 import requireAuthor from '../middleware/author.js';
 import Post from '../models/Post.js';
+import { clearPostsCache } from '../controllers/postController.js';
 
 const router = express.Router();
 
@@ -77,6 +78,9 @@ router.post('/:id/toggle-hide', auth, requireAuthor, async (req, res) => {
     // Toggle the hidden status
     post.hidden = !post.hidden;
     await post.save();
+    
+    // Clear backend cache to ensure fresh data on next request
+    clearPostsCache();
     
     console.log(`📝 Post ${req.params.id} ${post.hidden ? 'hidden' : 'unhidden'} by author`);
     
