@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import connectDB from './config/db.js';
 import config from './config/environment.js';
+import { createCorsOptions, getAllowedOrigins } from './config/cors.js';
 import authorRoutes from './routes/author.js';
 import postRoutes from './routes/posts.js';
 import categoriesRoutes from './routes/categories.js';
@@ -68,47 +69,13 @@ connectDB().then(async () => {
   const app = express();
 
   // Debug CORS configuration
+  const allowedOrigins = getAllowedOrigins();
   console.log('🔧 CORS Configuration:');
-  console.log('Allowed Origins:', config.allowedOrigins);
+  console.log('Allowed Origins:', allowedOrigins);
   console.log('Node Environment:', process.env.NODE_ENV);
 
-  // Configure CORS with environment-specific settings
-  const corsOptions = {
-    origin: function (origin, callback) {
-      // Allow requests with no origin (like mobile apps or curl requests)
-      if (!origin) return callback(null, true);
-      
-      console.log('🌐 CORS Request from origin:', origin);
-      
-      // Check if origin is in allowed list
-      if (config.allowedOrigins.includes(origin)) {
-        console.log('✅ CORS allowed for:', origin);
-        callback(null, true);
-      } else {
-        // In production, be more permissive for elankodse.com subdomains
-        if (config.isProduction && origin && origin.includes('elankodse.com')) {
-          console.log('✅ CORS allowed for elankodse.com subdomain:', origin);
-          callback(null, true);
-        } else {
-          console.log('❌ CORS blocked for:', origin);
-          console.log('Allowed origins:', config.allowedOrigins);
-          // In production, log but don't block (for debugging)
-          if (config.isProduction) {
-            console.warn('🚨 Production CORS block - allowing anyway for stability');
-            callback(null, true);
-          } else {
-            callback(new Error('Not allowed by CORS'));
-          }
-        }
-      }
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'x-dashboard-access'],
-    optionsSuccessStatus: 200, // Some legacy browsers (IE11, various SmartTVs) choke on 204
-    preflightContinue: false,
-    maxAge: 86400 // 24 hours
-  };
+  // Configure CORS with centralized settings
+  const corsOptions = createCorsOptions();
 
   app.use(cors(corsOptions));
 
@@ -204,7 +171,7 @@ connectDB().then(async () => {
       timestamp: new Date().toISOString(),
       environment: config.nodeEnv,
       cors: {
-        allowedOrigins: config.allowedOrigins
+        allowedOrigins: getAllowedOrigins()
       }
     });
   });
@@ -325,7 +292,7 @@ connectDB().then(async () => {
         error: 'CORS Error',
         message: 'Origin not allowed',
         origin: req.get('Origin'),
-        allowedOrigins: config.allowedOrigins
+        allowedOrigins: getAllowedOrigins()
       });
     }
     

@@ -1,5 +1,5 @@
 import dotenv from 'dotenv';
-import { getCorsOrigins, getUrls } from './constants.js';
+import { getUrls } from './constants.js';
 
 dotenv.config();
 
@@ -14,9 +14,6 @@ const config = {
   // Server
   port: process.env.PORT || 8084,
   nodeEnv: process.env.NODE_ENV || 'development',
-  
-  // CORS - Use centralized constants
-  allowedOrigins: getCorsOrigins(process.env.NODE_ENV),
   
   // JWT
   jwtSecret: process.env.JWT_SECRET || 'your_jwt_secret_here',
