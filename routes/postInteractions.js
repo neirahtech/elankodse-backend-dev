@@ -72,7 +72,18 @@ router.post('/:id/toggle-like', async (req, res) => {
 // Toggle hide/unhide a post (Author only)
 router.post('/:id/toggle-hide', auth, requireAuthor, async (req, res) => {
   try {
-    const post = await Post.findOne({ where: { postId: req.params.id } });
+    console.log('🔍 Toggle-hide request for postId:', req.params.id, 'by user:', req.user.id);
+    
+    // Try to find post by postId first (Blogger ID), then by database id as fallback
+    let post = await Post.findOne({ where: { postId: req.params.id } });
+    
+    // If not found by postId and the param looks like a database id (integer), try finding by database id
+    if (!post && /^\d+$/.test(req.params.id)) {
+      console.log('🔍 Not found by postId, trying database id:', req.params.id);
+      post = await Post.findOne({ where: { id: parseInt(req.params.id) } });
+    }
+    
+    console.log('🔍 Post found:', post ? `${post.title} (hidden: ${post.hidden})` : 'null');
     if (!post) return res.status(404).json({ error: 'Post not found' });
     
     // Toggle the hidden status

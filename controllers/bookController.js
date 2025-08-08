@@ -3,19 +3,28 @@ import config from '../config/environment.js';
 
 // Utility function to convert image URLs to current environment
 const convertImageUrl = (imageUrl) => {
-  if (!imageUrl) return imageUrl;
+  // Return null/empty values as-is without processing
+  if (!imageUrl || imageUrl.trim() === '') return imageUrl;
   
-  // Extract the filename from any URL
-  const filename = imageUrl.split('/').pop();
-  
-  // Use production URL if forced or in production environment
-  if (config.forceProductionUrls || config.isProduction) {
-    return `${config.productionUrl}/uploads/images/${filename}`;
+  // If it's already a full URL or starts with http/https, return as-is
+  if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+    return imageUrl;
   }
   
-  // Return URL for current local environment
-  const currentBaseUrl = config.getServerUrl();
-  return `${currentBaseUrl}/uploads/images/${filename}`;
+  // If it's a relative path that starts with '/uploads/', convert to full URL
+  if (imageUrl.startsWith('/uploads/')) {
+    // Use production URL if forced or in production environment
+    if (config.forceProductionUrls || config.isProduction) {
+      return `${config.productionUrl}${imageUrl}`;
+    }
+    
+    // Return URL for current local environment
+    const currentBaseUrl = config.getServerUrl();
+    return `${currentBaseUrl}${imageUrl}`;
+  }
+  
+  // For other paths (like /src/assets/...), return as-is
+  return imageUrl;
 };
 
 // Utility function to process book data with correct image URLs

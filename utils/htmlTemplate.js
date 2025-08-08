@@ -99,9 +99,9 @@ export const generateBookHTML = (metaData) => {
     <!-- Open Graph / Facebook -->
     <meta property="og:title" content="${metaData.title}" />
     <meta property="og:description" content="${metaData.description}" />
-    <meta property="og:image" content="${metaData.image}" />
-    <meta property="og:image:width" content="1200" />
-    <meta property="og:image:height" content="630" />
+    ${metaData.image ? `<meta property="og:image" content="${metaData.image}" />` : ''}
+    ${metaData.image ? `<meta property="og:image:width" content="1200" />` : ''}
+    ${metaData.image ? `<meta property="og:image:height" content="630" />` : ''}
     <meta property="og:url" content="${metaData.url}" />
     <meta property="og:type" content="book" />
     <meta property="og:site_name" content="${metaData.siteName}" />
@@ -119,12 +119,12 @@ export const generateBookHTML = (metaData) => {
     <meta name="twitter:creator" content="@elankodse" />
     <meta name="twitter:title" content="${metaData.title}" />
     <meta name="twitter:description" content="${metaData.description}" />
-    <meta name="twitter:image" content="${metaData.image}" />
+    ${metaData.image ? `<meta name="twitter:image" content="${metaData.image}" />` : ''}
     
     <!-- LinkedIn specific -->
     <meta property="linkedin:title" content="${metaData.title}" />
     <meta property="linkedin:description" content="${metaData.description}" />
-    <meta property="linkedin:image" content="${metaData.image}" />
+    ${metaData.image ? `<meta property="linkedin:image" content="${metaData.image}" />` : ''}
     
     <!-- Canonical URL -->
     <link rel="canonical" href="${metaData.url}" />
@@ -139,8 +139,8 @@ export const generateBookHTML = (metaData) => {
         "@type": "Person",
         "name": "${metaData.author}"
       },
-      "description": "${metaData.description}",
-      "image": "${metaData.image}",
+      "description": "${metaData.description}",${metaData.image ? `
+      "image": "${metaData.image}",` : ''}
       "url": "${metaData.url}",
       "inLanguage": "ta-IN",
       "genre": "${metaData.category}",
@@ -165,7 +165,7 @@ export const generateBookHTML = (metaData) => {
     <div style="font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; text-align: center;">
       <h1 style="color: #1e40af; margin-bottom: 20px;">${metaData.title}</h1>
       <p style="color: #666; font-size: 18px; line-height: 1.6; margin-bottom: 30px;">${metaData.description}</p>
-      <img src="${metaData.image}" alt="${metaData.title}" style="max-width: 300px; height: auto; border-radius: 8px; margin-bottom: 20px;" />
+      ${metaData.image ? `<img src="${metaData.image}" alt="${metaData.title}" style="max-width: 300px; height: auto; border-radius: 8px; margin-bottom: 20px;" />` : ''}
       <p style="color: #999; font-size: 14px;">
         By ${metaData.author} ${metaData.publishedTime ? '• ' + new Date(metaData.publishedTime).getFullYear() : ''}
       </p>

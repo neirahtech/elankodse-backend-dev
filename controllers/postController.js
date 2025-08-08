@@ -357,51 +357,58 @@ export const getPublishedPosts = async (req, res) => {
 
 export const getPostById = async (req, res) => {
   try {
-    const { id } = req.params;
+    const { identifier } = req.params;
     
-    console.log('Fetching post with ID:', id);
+    console.log('🔍 Fetching post with identifier:', identifier);
+    console.log('🔐 User context:', {
+      authenticated: !!req.user,
+      isAuthor: req.user?.isAuthor,
+      userId: req.user?.id
+    });
     
-    if (!id) {
-      console.log('No ID provided');
+    if (!identifier) {
+      console.log('❌ No identifier provided');
       return res.status(400).json({ error: 'Post ID is required' });
     }
 
     // Try to find by URL slug first, then by postId, then by numeric id
-    let whereClause = { urlSlug: id };
+    let whereClause = { urlSlug: identifier };
     // Add hidden filter for non-authors
     if (!req.user || !req.user.isAuthor) {
       whereClause.hidden = false;
     }
     
+    console.log('🔍 Searching by URL slug with clause:', whereClause);
     let post = await Post.findOne({ 
       where: whereClause,
       attributes: [
         'id', 'postId', 'title', 'date', 'category', 'coverImage', 'authorId', 'author', 'comments', 'likes', 'updatedAt', 'excerpt', 'likedBy', 'status', 'subtitle', 'content', 'tags', 'views', 'publishedAt', 'hidden', 'urlSlug', 'additionalImages'
       ]
     });
-    console.log('Search by URL slug result:', post ? 'Found' : 'Not found');
+    console.log('📝 Search by URL slug result:', post ? `Found: ${post.title}` : 'Not found');
     
     if (!post) {
       // Try by postId
-      whereClause = { postId: id };
+      whereClause = { postId: identifier };
       // Add hidden filter for non-authors
       if (!req.user || !req.user.isAuthor) {
         whereClause.hidden = false;
       }
       
+      console.log('🔍 Searching by postId with clause:', whereClause);
       post = await Post.findOne({ 
         where: whereClause,
         attributes: [
           'id', 'postId', 'title', 'date', 'category', 'coverImage', 'authorId', 'author', 'comments', 'likes', 'updatedAt', 'excerpt', 'likedBy', 'status', 'subtitle', 'content', 'tags', 'views', 'publishedAt', 'hidden', 'urlSlug', 'additionalImages'
         ]
       });
-      console.log('Search by postId result:', post ? 'Found' : 'Not found');
+      console.log('📝 Search by postId result:', post ? `Found: ${post.title}` : 'Not found');
     }
     
     if (!post) {
       // If not found by postId, try by numeric id
-      const numericId = parseInt(id);
-      console.log('Trying numeric ID:', numericId);
+      const numericId = parseInt(identifier);
+      console.log('🔍 Trying numeric ID:', numericId);
       if (!isNaN(numericId)) {
         const numericWhereClause = { id: numericId };
         // Add hidden filter for non-authors
@@ -409,18 +416,19 @@ export const getPostById = async (req, res) => {
           numericWhereClause.hidden = false;
         }
         
+        console.log('🔍 Searching by numeric ID with clause:', numericWhereClause);
         post = await Post.findOne({
           where: numericWhereClause,
           attributes: [
             'id', 'postId', 'title', 'date', 'category', 'coverImage', 'authorId', 'author', 'comments', 'likes', 'updatedAt', 'excerpt', 'likedBy', 'status', 'subtitle', 'content', 'tags', 'views', 'publishedAt', 'hidden', 'urlSlug', 'additionalImages'
           ]
         });
-        console.log('Search by numeric ID result:', post ? 'Found' : 'Not found');
+        console.log('📝 Search by numeric ID result:', post ? `Found: ${post.title}` : 'Not found');
       }
     }
 
     if (!post) {
-      console.log('Post not found for ID:', id);
+      console.log('Post not found for identifier:', identifier);
       return res.status(404).json({ error: 'Post not found' });
     }
 

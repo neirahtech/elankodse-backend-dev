@@ -182,7 +182,7 @@ router.get('/book/:id', async (req, res) => {
     const metaData = {
       title: `${bookData.title} | எழுத்தாளர் இளங்கோ புத்தகங்கள்`,
       description: metaDescription,
-      image: bookData.coverImage || '/src/assets/images/fwdbookcovers/Mexico.jpg',
+      image: bookData.coverImage || null, // Don't force a default image
       url: urls.getBookUrl(bookData.id),
       type: 'book',
       author: 'எழுத்தாளர் இளங்கோ',
@@ -226,7 +226,7 @@ router.get('/book/:id/preview', async (req, res) => {
     const metaData = {
       title: `${bookData.title} | எழுத்தாளர் இளங்கோ புத்தகங்கள்`,
       description: metaDescription,
-      image: bookData.coverImage || '/src/assets/images/fwdbookcovers/Mexico.jpg',
+      image: bookData.coverImage || null, // Don't force a default image
       url: urls.getBookUrl(bookData.id),
       type: 'book',
       author: 'எழுத்தாளர் இளங்கோ',
