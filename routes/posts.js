@@ -6,6 +6,7 @@ import optionalAuth from '../middleware/optionalAuth.js';
 import requireAuthor from '../middleware/author.js';
 import { sequelize } from '../config/db.js';
 import { Op } from 'sequelize';
+import config from '../config/environment.js';
 import multer from 'multer';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -59,7 +60,10 @@ router.post('/upload-image', auth, requireAuthor, upload.single('image'), (req, 
       return res.status(400).json({ error: 'No image file provided' });
     }
     
-    const imageUrl = `/uploads/images/${req.file.filename}`;
+    // Use the proper backend URL from environment configuration
+    const serverUrl = config.getServerUrl();
+    const imageUrl = `${serverUrl}/uploads/images/${req.file.filename}`;
+    
     res.json({ 
       success: true, 
       imageUrl: imageUrl,
@@ -76,7 +80,51 @@ router.get('/published', optionalAuth, getPublishedPosts);
 router.get('/count', getPostCount);
 router.get('/categories', getCategories);
 router.get('/categories/search', getCategories); // Alias for search functionality
-router.get('/:id', optionalAuth, getPostById);
+// Get post by ID or slug
+router.get('/:identifier', optionalAuth, async (req, res) => {
+  try {
+    const { identifier } = req.params;
+    
+    // Check if identifier is numeric (ID) or string (slug)
+    const isNumeric = /^\d+$/.test(identifier);
+    
+    let post;
+    if (isNumeric) {
+      // Find by ID
+      post = await Post.findByPk(identifier);
+    } else {
+      // Find by slug
+      post = await Post.findOne({
+        where: { urlSlug: identifier }
+      });
+    }
+    
+    if (!post) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+    
+    // Check if user can view this post
+    const userRole = req.user?.role;
+    const isAuthenticated = req.user && req.user.id;
+    
+    // Only published posts are visible to non-authors
+    if (post.status !== 'published' || post.hidden) {
+      if (!isAuthenticated || (userRole !== 'admin' && userRole !== 'author')) {
+        return res.status(404).json({ error: 'Post not found' });
+      }
+    }
+    
+    // Increment view count for published posts
+    if (post.status === 'published' && !post.hidden) {
+      await post.increment('views');
+    }
+    
+    res.json(post);
+  } catch (error) {
+    console.error('Error fetching post:', error);
+    res.status(500).json({ error: 'Failed to fetch post' });
+  }
+});
 
 // Create post (author only)
 router.post('/', auth, requireAuthor, async (req, res) => {

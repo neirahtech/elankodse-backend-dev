@@ -153,6 +153,7 @@ connectDB().then(async () => {
   app.use('/api/meta', metaRoutes);
   app.use('/api/fix', fixImagesRoutes);
 
+
   // Root endpoint
   app.get('/', (req, res) => {
     res.json({
