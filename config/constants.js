@@ -13,7 +13,7 @@ export const PRODUCTION_URLS = {
   
   // Development URLs (fallbacks)
   DEV_FRONTEND: 'http://localhost:5173',
-  DEV_BACKEND: 'http://localhost:8084',
+  DEV_BACKEND: 'http://localhost:8085',
   
   // Asset URLs
   DEFAULT_BANNER: '/src/assets/images/BlackAndBeigeFeminineHowToWebsiteBlogBanner.jpg',
@@ -69,7 +69,6 @@ export const PRODUCTION_CORS_ORIGINS = [
 export const DEVELOPMENT_CORS_ORIGINS = [
   'http://localhost:5173',
   'http://localhost:3000', 
-  'http://localhost:8084',
   'http://localhost:8085',
   'https://localhost:5173',
   'https://localhost:3000'

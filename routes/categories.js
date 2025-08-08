@@ -1,6 +1,7 @@
 import express from 'express';
-import { Category, Post } from '../models/index.js';
+import { Post } from '../models/index.js';
 import { Op } from 'sequelize';
+import { sequelize as db } from '../config/db.js';
 
 const router = express.Router();
 
@@ -11,46 +12,95 @@ router.get('/', async (req, res) => {
       page = 1, 
       limit = 20, 
       search = '', 
-      sortBy = 'postCount', 
+      sortBy = 'count', 
       sortOrder = 'DESC',
       includeEmpty = 'false'
     } = req.query;
     
     const offset = (parseInt(page) - 1) * parseInt(limit);
     
-    // Build where clause
-    const whereClause = {
-      isActive: true
+    console.log(`🔍 Fetching categories (page ${page}, limit ${limit})`);
+    
+    // Get categories from Posts table using GROUP BY
+    const { Op, sequelize } = await import('sequelize');
+    
+    // Build where clause for posts
+    const postWhereClause = {
+      status: 'published',
+      hidden: false
     };
     
     if (search) {
-      whereClause.name = {
+      postWhereClause.category = {
         [Op.like]: `%${search}%`
       };
     }
     
     if (includeEmpty === 'false') {
-      whereClause.postCount = {
-        [Op.gt]: 0
+      postWhereClause.category = {
+        [Op.and]: [
+          { [Op.not]: null },
+          { [Op.ne]: '' }
+        ]
       };
     }
     
-    // Get categories with pagination
-    const { count, rows: categories } = await Category.findAndCountAll({
-      where: whereClause,
-      order: [[sortBy, sortOrder.toUpperCase()]],
+    // Get categories with their counts
+    const categoriesRaw = await Post.findAll({
+      attributes: [
+        'category',
+        [db.fn('COUNT', db.col('*')), 'count']
+      ],
+      where: postWhereClause,
+      group: ['category'],
+      order: [[db.fn('COUNT', db.col('*')), sortOrder.toUpperCase()]],
       limit: parseInt(limit),
       offset: offset,
-      attributes: ['id', 'name', 'slug', 'description', 'postCount', 'createdAt']
+      raw: true
     });
     
+    // Get total count of unique categories
+    const totalCategoriesResult = await Post.findAll({
+      attributes: [[db.fn('DISTINCT', db.col('category')), 'category']],
+      where: {
+        category: {
+          [Op.not]: null,
+          [Op.ne]: ''
+        },
+        status: 'published',
+        hidden: false
+      },
+      raw: true
+    });
+    
+    let totalCount = totalCategoriesResult.length;
+    if (search) {
+      const searchFilteredCount = await Post.findAll({
+        attributes: [[db.fn('DISTINCT', db.col('category')), 'category']],
+        where: postWhereClause,
+        raw: true
+      });
+      totalCount = searchFilteredCount.length;
+    }
+    
+    const categories = categoriesRaw.map(row => ({
+      name: row.category,
+      slug: encodeURIComponent(row.category), // Use encoded category name as slug
+      count: parseInt(row.count) || 0
+    }));
+    
+    const totalPages = Math.ceil(totalCount / parseInt(limit));
+    const hasMore = offset + categories.length < totalCount;
+    
+    console.log(`📊 Found ${categories.length} categories (page ${page}/${totalPages})`);
+    
     res.json({
-      categories,
+      categories: categories,
       pagination: {
         currentPage: parseInt(page),
-        totalPages: Math.ceil(count / parseInt(limit)),
-        totalCount: count,
-        hasMore: offset + categories.length < count,
+        totalPages: totalPages,
+        totalCount: totalCount,
+        hasMore: hasMore,
         limit: parseInt(limit)
       }
     });
@@ -74,19 +124,15 @@ router.get('/:categorySlug/posts', async (req, res) => {
     
     const offset = (parseInt(page) - 1) * parseInt(limit);
     
-    // Find category by slug
-    const category = await Category.findOne({
-      where: { slug: categorySlug, isActive: true }
-    });
+    // Decode the category slug (it's actually the category name)
+    const categoryName = decodeURIComponent(categorySlug);
     
-    if (!category) {
-      return res.status(404).json({ error: 'Category not found' });
-    }
+    console.log(`🔍 Looking for posts with category: "${categoryName}"`);
     
-    // Get posts for this category
+    // Get posts for this category using the category field
     const { count, rows: posts } = await Post.findAndCountAll({
       where: {
-        categoryId: category.id,
+        category: categoryName,
         status: 'published',
         hidden: false
       },
@@ -99,13 +145,13 @@ router.get('/:categorySlug/posts', async (req, res) => {
       ]
     });
     
+    console.log(`📊 Found ${count} posts for category "${categoryName}"`);
+    
     res.json({
       category: {
-        id: category.id,
-        name: category.name,
-        slug: category.slug,
-        description: category.description,
-        postCount: category.postCount
+        name: categoryName,
+        slug: categorySlug,
+        postCount: count
       },
       posts,
       pagination: {
@@ -123,61 +169,36 @@ router.get('/:categorySlug/posts', async (req, res) => {
   }
 });
 
-// Get category by slug
+// Get category by slug (returns category info)
 router.get('/:slug', async (req, res) => {
   try {
     const { slug } = req.params;
+    const categoryName = decodeURIComponent(slug);
     
-    const category = await Category.findOne({
-      where: { slug, isActive: true },
-      attributes: ['id', 'name', 'slug', 'description', 'postCount', 'createdAt']
-    });
-    
-    if (!category) {
-      return res.status(404).json({ error: 'Category not found' });
-    }
-    
-    res.json({ category });
-    
-  } catch (error) {
-    console.error('Error fetching category:', error);
-    res.status(500).json({ error: 'Failed to fetch category' });
-  }
-});
-
-// Update category post count (internal use)
-router.put('/:id/update-count', async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    const category = await Category.findByPk(id);
-    if (!category) {
-      return res.status(404).json({ error: 'Category not found' });
-    }
-    
-    // Count published posts for this category
+    // Count posts for this category
     const postCount = await Post.count({
       where: {
-        categoryId: id,
+        category: categoryName,
         status: 'published',
         hidden: false
       }
     });
     
-    await category.update({ postCount });
+    if (postCount === 0) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
     
     res.json({ 
-      message: 'Category post count updated', 
       category: {
-        id: category.id,
-        name: category.name,
-        postCount
+        name: categoryName,
+        slug: slug,
+        postCount: postCount
       }
     });
     
   } catch (error) {
-    console.error('Error updating category count:', error);
-    res.status(500).json({ error: 'Failed to update category count' });
+    console.error('Error fetching category:', error);
+    res.status(500).json({ error: 'Failed to fetch category' });
   }
 });
 

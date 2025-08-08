@@ -12,7 +12,7 @@ const config = {
   mysqlPort: process.env.MYSQL_PORT || 3306,
 
   // Server
-  port: process.env.PORT || 8084,
+  port: process.env.PORT || 8085,
   nodeEnv: process.env.NODE_ENV || 'development',
   
   // JWT

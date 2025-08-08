@@ -76,6 +76,9 @@ export const getAllPosts = async (req, res) => {
     const offset = (page - 1) * limit;
     const search = req.query.search || '';
     const status = req.query.status || '';
+    const hiddenFilter = req.query.hidden; // Support for hidden filter from frontend
+    
+    console.log(`🔍 Request parameters - page: ${page}, status: "${status || 'none'}", hiddenFilter: "${hiddenFilter || 'none'}", search: "${search || 'none'}"`);
     
     // Build where clause - only authors can see hidden posts
     let whereClause = { hidden: false };
@@ -85,22 +88,42 @@ export const getAllPosts = async (req, res) => {
     const isAuthenticated = req.user && req.user.id;
     const isDashboardAccess = req.headers['x-dashboard-access'] === 'true';
     
-    console.log(`Dashboard request - Auth: ${isAuthenticated}, Dashboard Header: ${isDashboardAccess}, User: ${req.user?.id || 'none'}`);
+    console.log(`Dashboard request - Auth: ${isAuthenticated}, Dashboard Header: ${isDashboardAccess}, User: ${req.user?.id || 'none'}, Status filter: ${status || 'none'}`);
     
     // For dashboard access with valid auth token OR when dashboard header is present, show all posts
     // (In development, we trust the dashboard header for testing)
     if ((isAuthenticated && isDashboardAccess) || (isDashboardAccess && process.env.NODE_ENV === 'development')) {
-      // Admin/author can see ALL posts including hidden and drafts
+      // Admin/author can see ALL posts including hidden and drafts, but still apply filters if specified
       whereClause = {};
       console.log('Dashboard access granted - showing all posts including drafts and hidden');
+      
+      // Apply status filter for dashboard users only if specified
+      if (status && status.trim() !== '') {
+        whereClause.status = status;
+        console.log(`Dashboard: Applied status filter - ${status}`);
+      }
+      
+      // Apply hidden filter if specified (for the hidden tab)
+      if (hiddenFilter === 'true' || hiddenFilter === true) {
+        whereClause.hidden = true;
+        console.log('Dashboard: Applied hidden filter - showing only hidden posts');
+      } else if (hiddenFilter === 'false' || hiddenFilter === false) {
+        whereClause.hidden = false;
+        console.log('Dashboard: Applied non-hidden filter - showing only non-hidden posts');
+      }
+      // For "All" tab: hiddenFilter will be undefined, so no hidden filter is applied
+      console.log('Dashboard: Final whereClause:', whereClause);
+      
     } else {
       // Build where clause - only show non-hidden published posts for public access
       whereClause = { hidden: false, status: 'published' };
       console.log('Public access - showing only published, non-hidden posts');
-    }
-    
-    if (status) {
-      whereClause.status = status;
+      
+      // For public access, status filter is already applied (published only)
+      // But if a different status is requested, ignore it for security
+      if (status && status !== 'published') {
+        console.log(`Public access: Ignoring status filter '${status}' - only published posts allowed`);
+      }
     }
     
     // Add search functionality
