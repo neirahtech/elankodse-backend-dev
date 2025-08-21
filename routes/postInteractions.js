@@ -9,7 +9,18 @@ const router = express.Router();
 // Toggle like/unlike a post
 router.post('/:id/toggle-like', async (req, res) => {
   try {
-    const post = await Post.findOne({ where: { postId: req.params.id } });
+    console.log('🔍 Toggle-like request for postId:', req.params.id);
+    
+    // Try to find post by postId first (Blogger ID), then by database id as fallback
+    let post = await Post.findOne({ where: { postId: req.params.id } });
+    
+    // If not found by postId and the param looks like a database id (integer), try finding by database id
+    if (!post && /^\d+$/.test(req.params.id)) {
+      console.log('🔍 Not found by postId, trying database id:', req.params.id);
+      post = await Post.findOne({ where: { id: parseInt(req.params.id) } });
+    }
+    
+    console.log('🔍 Post found:', post ? `${post.title} (likes: ${post.likes})` : 'null');
     if (!post) return res.status(404).json({ error: 'Post not found' });
     
     // For anonymous users, use a combination of IP and user agent for better consistency
@@ -53,10 +64,19 @@ router.post('/:id/toggle-like', async (req, res) => {
     await post.save();
     
     // Verify the save worked by fetching the post again
-    const savedPost = await Post.findOne({ where: { postId: req.params.id } });
+    // Use the same lookup method that worked initially
+    let savedPost;
+    if (post.postId === req.params.id) {
+      // Found by postId (Blogger ID)
+      savedPost = await Post.findOne({ where: { postId: req.params.id } });
+    } else {
+      // Found by database id
+      savedPost = await Post.findOne({ where: { id: parseInt(req.params.id) } });
+    }
+    
     console.log('🔍 After save verification:', {
-      savedLikes: savedPost.likes,
-      savedLikedBy: savedPost.likedBy
+      savedLikes: savedPost?.likes || 'not found',
+      savedLikedBy: savedPost?.likedBy || 'not found'
     });
     
     res.json({ 

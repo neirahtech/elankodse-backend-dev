@@ -77,6 +77,11 @@ const Post = sequelize.define('Post', {
     }
   },
   author: DataTypes.STRING, // Add this field to match the database schema
+  date: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    comment: 'Backward compatibility field - same as createdAt'
+  },
   publishedAt: {
     type: DataTypes.DATE,
     defaultValue: DataTypes.NOW,
@@ -100,7 +105,7 @@ const Post = sequelize.define('Post', {
   indexes: [
     // Composite index for published posts query optimization
     {
-      fields: ['status', 'hidden', 'date']
+      fields: ['status', 'hidden', 'publishedAt']
     },
     // Individual indexes for performance
     {
@@ -129,11 +134,78 @@ const Post = sequelize.define('Post', {
     },
     {
       fields: ['hidden']
-    },
-    {
-      fields: ['date']
     }
-  ]
+  ],
+  hooks: {
+    // Populate date fields before creating a post
+    beforeCreate: async (post, options) => {
+      if (post.publishedAt && (!post.publishedYear || !post.publishedMonth || !post.publishedDay)) {
+        const date = new Date(post.publishedAt);
+        if (!isNaN(date.getTime())) {
+          post.publishedYear = date.getFullYear();
+          post.publishedMonth = date.getMonth() + 1; // getMonth() returns 0-11
+          post.publishedDay = date.getDate();
+        }
+      }
+    },
+    
+    // Populate date fields before updating a post
+    beforeUpdate: async (post, options) => {
+      if (post.publishedAt && (!post.publishedYear || !post.publishedMonth || !post.publishedDay)) {
+        const date = new Date(post.publishedAt);
+        if (!isNaN(date.getTime())) {
+          post.publishedYear = date.getFullYear();
+          post.publishedMonth = date.getMonth() + 1; // getMonth() returns 0-11
+          post.publishedDay = date.getDate();
+        }
+      }
+    },
+    
+    // Update diary entries after creating a post
+    afterCreate: async (post, options) => {
+      try {
+        // Import here to avoid circular dependency
+        const { updateDiaryForPost } = await import('../utils/diaryUtils.js');
+        await updateDiaryForPost(post);
+      } catch (error) {
+        // Don't throw error to avoid breaking post creation
+        console.error('Error updating diary after post creation:', error);
+      }
+    },
+    
+    // Update diary entries after updating a post
+    afterUpdate: async (post, options) => {
+      try {
+        // Import here to avoid circular dependency
+        const { updateDiaryForPost } = await import('../utils/diaryUtils.js');
+        await updateDiaryForPost(post);
+      } catch (error) {
+        // Don't throw error to avoid breaking post update
+        console.error('Error updating diary after post update:', error);
+      }
+    },
+    
+    // Update diary entries after deleting a post
+    afterDestroy: async (post, options) => {
+      try {
+        // Import here to avoid circular dependency
+        const { updateDiaryForPost } = await import('../utils/diaryUtils.js');
+        
+        // For deleted posts, we need to recount the posts for that month
+        if (post && post.publishedYear && post.publishedMonth) {
+          // Create a fake post object with zero count to trigger recount
+          await updateDiaryForPost({
+            ...post.dataValues,
+            status: 'published', // Force the function to run
+            hidden: false
+          });
+        }
+      } catch (error) {
+        // Don't throw error to avoid breaking post deletion
+        console.error('Error updating diary after post deletion:', error);
+      }
+    }
+  }
 });
 
 export default Post; 

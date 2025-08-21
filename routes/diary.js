@@ -1,7 +1,17 @@
 import express from 'express';
 import { Post, Diary } from '../models/index.js';
+import { updateDiaryEntries, clearDiaryCache } from '../utils/diaryUtils.js';
+import { dashboardCache } from '../controllers/postController.js';
 
 const router = express.Router();
+
+// Clear diary-related caches
+function clearDiaryCaches() {
+  // Clear backend dashboard cache
+  if (dashboardCache && dashboardCache.clear) {
+    dashboardCache.clear();
+  }
+}
 
 // Get all diary entries (year-month combinations) with pagination
 router.get('/', async (req, res) => {
@@ -186,6 +196,51 @@ router.get('/date/:year/:month/:day', async (req, res) => {
   } catch (error) {
     console.error('Error fetching posts for specific date:', error);
     res.status(500).json({ error: 'Failed to fetch posts for specific date' });
+  }
+});
+
+// Manual diary update endpoint (useful for maintenance)
+router.post('/update', async (req, res) => {
+  try {
+    const result = await updateDiaryEntries();
+    
+    // Clear caches after update
+    clearDiaryCaches();
+    
+    res.json({
+      success: true,
+      message: 'Diary entries updated successfully',
+      result: {
+        created: result.created,
+        updated: result.updated,
+        total: result.total
+      }
+    });
+  } catch (error) {
+    console.error('Error in manual diary update:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to update diary entries',
+      message: error.message 
+    });
+  }
+});
+
+// Clear diary caches endpoint
+router.post('/clear-cache', (req, res) => {
+  try {
+    clearDiaryCaches();
+    res.json({
+      success: true,
+      message: 'Diary caches cleared successfully',
+      cachesToClear: clearDiaryCache().cachesToClear
+    });
+  } catch (error) {
+    console.error('Error clearing diary cache:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to clear diary cache' 
+    });
   }
 });
 

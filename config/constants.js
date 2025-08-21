@@ -56,13 +56,14 @@ export const getUrls = (nodeEnv = process.env.NODE_ENV) => {
   };
 };
 
-// CORS origins for production
+// CORS origins for production - Updated to match ALLOWED_ORIGINS from .env
 export const PRODUCTION_CORS_ORIGINS = [
-  PRODUCTION_URLS.FRONTEND_MAIN,
-  PRODUCTION_URLS.FRONTEND_WWW,
-  PRODUCTION_URLS.FRONTEND_DIGITALOCEAN,
-  PRODUCTION_URLS.BACKEND_API,
-  PRODUCTION_URLS.BACKEND_MAIN
+  PRODUCTION_URLS.FRONTEND_MAIN,                    // https://elankodse.com
+  PRODUCTION_URLS.FRONTEND_WWW,                     // https://www.elankodse.com  
+  PRODUCTION_URLS.FRONTEND_DIGITALOCEAN,            // https://digitalocean.elankodse.com
+  PRODUCTION_URLS.BACKEND_API,                      // https://api.elankodse.com
+  'https://elankodse-backend.onrender.com',         // Legacy Render.com URL
+  'http://localhost:8085'                           // Local backend for mixed environments
 ];
 
 // Development CORS origins

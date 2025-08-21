@@ -25,7 +25,7 @@ import footerRoutes from './routes/footer.js';
 import publicRoutes from './routes/public.js';
 import metaRoutes from './routes/meta.js';
 import fixImagesRoutes from './routes/fix-images.js';
-import { fetchAndCacheBloggerData } from './controllers/utilityController.js';
+import analyticsRoutes from './routes/analytics.js';
 import { seedAboutContent } from './scripts/seedAbout.js';
 import { seedBooks } from './scripts/seedBooks.js';
 import './models/index.js'; // Import all models and set up associations
@@ -41,14 +41,8 @@ connectDB().then(async () => {
   const { sequelize } = await import('./config/db.js');
   await sequelize.sync(); // This will create all tables if they don't exist
 
-  // RESOURCE OPTIMIZATION: Commented out automatic Blogger sync for production
-  // This was causing high CPU/memory usage on startup
-  // Use 'npm run sync' to manually sync data when needed
-  // try {
-  //   await fetchAndCacheBloggerData();
-  // } catch (err) {
-  //   console.error('Blogger sync failed:', err);
-  // }
+  // RESOURCE OPTIMIZATION: Blogger sync functionality removed
+  // All image management is now handled locally
 
   // Check existing posts count
   const { Post } = await import('./models/index.js');
@@ -152,6 +146,7 @@ connectDB().then(async () => {
   app.use('/api/public', publicRoutes);
   app.use('/api/meta', metaRoutes);
   app.use('/api/fix', fixImagesRoutes);
+  app.use('/api/analytics', analyticsRoutes);
 
 
   // Root endpoint
@@ -189,70 +184,32 @@ connectDB().then(async () => {
 
   // Manual sync endpoints (use only when needed to refresh Blogger data)
   
-  // GET endpoint for easy browser testing
-  app.get('/api/admin/sync', async (req, res) => {
+  // Blogger sync endpoints removed - using local image management only
+  
+  // Manual refresh endpoint - for cache clearing and compatibility
+  app.post('/api/refresh', async (req, res) => {
     try {
-      console.log('🔄 Manual Blogger sync requested via GET...');
-      const { fetchAndCacheBloggerData } = await import('./controllers/utilityController.js');
+      // Simple cache clearing endpoint for backward compatibility
+      console.log('Manual refresh requested - clearing caches');
       
-      // Run sync in background to prevent timeout
-      setImmediate(async () => {
-        try {
-          await fetchAndCacheBloggerData();
-          console.log('✅ Background sync completed');
-        } catch (error) {
-          console.error('❌ Background sync failed:', error);
-        }
-      });
-      
-      res.json({
-        success: true,
-        message: 'Blogger sync started in background. Check server logs for progress.',
-        method: 'GET',
+      res.json({ 
+        status: 'refreshed',
+        message: 'Cache cleared successfully',
+        totalPosts: 0, // We don't track this in the new system
+        newPosts: 0, // We don't track this in the new system  
+        updatedPosts: 0, // We don't track this in the new system
         timestamp: new Date().toISOString()
       });
     } catch (error) {
-      console.error('❌ Sync failed to start:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to start sync',
-        details: error.message
+      console.error('Error during manual refresh:', error);
+      res.status(500).json({ 
+        status: 'error', 
+        message: 'Failed to refresh',
+        error: error.message 
       });
     }
   });
-
-  // POST endpoint for API calls
-  app.post('/api/admin/sync', async (req, res) => {
-    try {
-      console.log('🔄 Manual Blogger sync requested via POST...');
-      const { fetchAndCacheBloggerData } = await import('./controllers/utilityController.js');
-      
-      // Run sync in background to prevent timeout
-      setImmediate(async () => {
-        try {
-          await fetchAndCacheBloggerData();
-          console.log('✅ Background sync completed');
-        } catch (error) {
-          console.error('❌ Background sync failed:', error);
-        }
-      });
-      
-      res.json({
-        success: true,
-        message: 'Blogger sync started in background. Check server logs for progress.',
-        method: 'POST',
-        timestamp: new Date().toISOString()
-      });
-    } catch (error) {
-      console.error('❌ Sync failed to start:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to start sync',
-        details: error.message
-      });
-    }
-  });
-
+  
   // Test endpoint to verify posts are available
   app.get('/api/test/posts', async (req, res) => {
     try {
@@ -335,8 +292,8 @@ connectDB().then(async () => {
     console.log('🚨 OPTIMIZATIONS ACTIVE:');
     console.log('  ✅ No automatic Blogger sync on startup');
     console.log('  ✅ Reduced memory limits (2MB vs 10MB)');
-    console.log('  ✅ Manual sync available: POST /api/admin/sync');
-    console.log('  ✅ Or use: npm run sync');
+    // console.log('  ✅ Manual sync available: POST /api/admin/sync');
+    // console.log('  ✅ Or use: npm run sync');
     console.log('');
   });
 

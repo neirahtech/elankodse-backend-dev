@@ -873,7 +873,10 @@ router.post('/fix-missing-images', async (req, res) => {
     if (missingImages.length > 0) {
       console.log('Found records with missing image:', missingImages);
       
-      const replacementUrl = 'https://elankodse-backend.onrender.com/uploads/images/banner_1753710841801.webp';
+      // Use dynamic backend URL from environment configuration
+      const { getUrls } = await import('../config/constants.js');
+      const urls = getUrls();
+      const replacementUrl = `${urls.backend}/uploads/images/banner_1753710841801.webp`;
       
       console.log(`Updating to use: ${replacementUrl}`);
       

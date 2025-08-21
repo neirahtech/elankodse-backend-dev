@@ -314,10 +314,10 @@ router.delete('/:id', auth, requireAuthor, async (req, res) => {
     // Delete the post
     await post.destroy();
     
-    // Clear cache when a published post is deleted
-    if (post.status === 'published') {
-      clearPostsCache();
-    }
+    // Clear cache when ANY post is deleted (drafts, published, scheduled)
+    // This ensures the dashboard shows updated data immediately
+    clearPostsCache();
+    console.log(`✅ Post deleted and cache cleared - ID: ${post.id}, Status: ${post.status}, Title: ${post.title}`);
     
     res.json({ message: 'Post deleted' });
   } catch (error) {

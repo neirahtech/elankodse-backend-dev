@@ -6,6 +6,8 @@ import Image from './Image.js';
 import About from './About.js';
 import Category from './Category.js';
 import Diary from './Diary.js';
+import PageView from './PageView.js';
+import Visitor from './Visitor.js';
 
 // Set up associations
 Author.hasMany(Post, { foreignKey: 'authorId', as: 'posts' });
@@ -15,6 +17,14 @@ Post.belongsTo(Author, { foreignKey: 'authorId', as: 'authorInfo' });
 Category.hasMany(Post, { foreignKey: 'categoryId', as: 'posts' });
 Post.belongsTo(Category, { foreignKey: 'categoryId', as: 'categoryInfo' });
 
+// PageView associations
+Post.hasMany(PageView, { foreignKey: 'postId', as: 'pageViews' });
+PageView.belongsTo(Post, { foreignKey: 'postId', as: 'post' });
+
+// User associations for analytics
+User.hasMany(PageView, { foreignKey: 'userId', as: 'pageViews' });
+PageView.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
 // Note: Diary associations are handled manually in queries due to composite key requirements
 
 // Comment associations
@@ -23,4 +33,4 @@ Comment.belongsTo(Post, { foreignKey: 'postId', as: 'post' });
 User.hasMany(Comment, { foreignKey: 'userId', as: 'comments' });
 Comment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 
-export { Author, Post, Comment, User, Image, About, Category, Diary }; 
+export { Author, Post, Comment, User, Image, About, Category, Diary, PageView, Visitor }; 

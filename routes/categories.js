@@ -141,7 +141,7 @@ router.get('/:categorySlug/posts', async (req, res) => {
       offset: offset,
       attributes: [
         'id', 'postId', 'title', 'subtitle', 'excerpt', 'coverImage', 'content',
-        'publishedAt', 'views', 'likes', 'comments', 'author'
+        'date', 'publishedAt', 'views', 'likes', 'comments', 'author'
       ]
     });
     

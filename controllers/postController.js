@@ -3,14 +3,21 @@ import { Category } from '../models/index.js';
 
 // Simple in-memory cache for published posts (5 minute TTL)
 const postsCache = new Map();
-const dashboardCache = new Map(); // Add separate cache for dashboard
+export const dashboardCache = new Map(); // Add separate cache for dashboard and export for diary utils
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 // Cache invalidation function
 export const clearPostsCache = () => {
   postsCache.clear();
   dashboardCache.clear(); // Clear dashboard cache too
-  console.log('🗑️ Posts and dashboard cache cleared');
+  console.log('Posts and dashboard cache cleared');
+};
+
+// Enhanced cache clearing for diary updates
+export const clearDiaryAndPostsCache = () => {
+  clearPostsCache();
+  // Additional diary-specific cache clearing will be handled by diary utils
+  console.log('Posts, dashboard, and diary caches cleared');
 };
 
 // API endpoint to clear cache (for admin use)
