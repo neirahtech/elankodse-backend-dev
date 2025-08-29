@@ -1,5 +1,6 @@
 import express from 'express';
 import { getAllPosts, getPublishedPosts, getPostById, getPostCount, getCategories, clearCacheEndpoint, clearPostsCache } from '../controllers/postController.js';
+import { getUserIdentifier, hasUserLiked, getUserIdentificationDebug } from '../utils/userIdentification.js';
 import Post from '../models/Post.js';
 import auth from '../middleware/auth.js';
 import optionalAuth from '../middleware/optionalAuth.js';
@@ -12,6 +13,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import fs from 'fs';
+import sharp from 'sharp';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -53,21 +55,93 @@ const cleanHtmlTags = (text) => {
   return text.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
 };
 
-// Image upload endpoint
-router.post('/upload-image', auth, requireAuthor, upload.single('image'), (req, res) => {
+// Image upload endpoint with automatic resizing and optimization
+router.post('/upload-image', auth, requireAuthor, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No image file provided' });
     }
     
-    // Use the proper backend URL from environment configuration
-    const serverUrl = config.getServerUrl();
-    const imageUrl = `${serverUrl}/uploads/images/${req.file.filename}`;
+    const originalPath = req.file.path;
+    const originalFilename = req.file.filename;
+    const fileExt = path.extname(originalFilename);
+    const baseName = path.basename(originalFilename, fileExt);
+    
+    // Create optimized versions
+    const optimizedFilename = `${baseName}${fileExt}`;
+    const optimizedPath = path.join(path.dirname(originalPath), optimizedFilename);
+    
+    try {
+      // Get image metadata
+      const metadata = await sharp(originalPath).metadata();
+      console.log('📐 Original image metadata:', {
+        width: metadata.width,
+        height: metadata.height,
+        format: metadata.format,
+        size: Math.round(metadata.size / 1024) + 'KB'
+      });
+      
+      // Determine optimal resize dimensions
+      const maxWidth = 1920;
+      const maxHeight = 1080;
+      let resizeOptions = {};
+      
+      if (metadata.width > maxWidth || metadata.height > maxHeight) {
+        resizeOptions = {
+          width: maxWidth,
+          height: maxHeight,
+          fit: 'inside',
+          withoutEnlargement: true
+        };
+      }
+      
+      // Process and optimize the image
+      await sharp(originalPath)
+        .resize(resizeOptions.width ? resizeOptions : undefined)
+        .jpeg({ quality: 85, progressive: true }) // Convert to JPEG with good quality
+        .png({ compressionLevel: 8 }) // Optimize PNG
+        .webp({ quality: 85 }) // Support WebP if needed
+        .toFile(optimizedPath);
+      
+      // Get optimized image metadata
+      const optimizedMetadata = await sharp(optimizedPath).metadata();
+      console.log('✨ Optimized image metadata:', {
+        width: optimizedMetadata.width,
+        height: optimizedMetadata.height,
+        format: optimizedMetadata.format,
+        size: Math.round(optimizedMetadata.size / 1024) + 'KB',
+        compression: Math.round((1 - optimizedMetadata.size / metadata.size) * 100) + '%'
+      });
+      
+      // Delete original file if different from optimized
+      if (originalPath !== optimizedPath) {
+        fs.unlinkSync(originalPath);
+      }
+      
+    } catch (imageError) {
+      console.warn('⚠️ Image optimization failed, using original:', imageError.message);
+      // If optimization fails, use original file
+    }
+    
+    // For image uploads, always return just the relative path
+    // This allows the frontend URL transformation to work correctly
+    const relativePath = `/uploads/images/${optimizedFilename}`;
+    
+    // Debug logging for URL generation
+    console.log('🖼️ Image Upload URL Generation Debug:', {
+      NODE_ENV: process.env.NODE_ENV,
+      PRODUCTION_URL: process.env.PRODUCTION_URL,
+      filename: optimizedFilename,
+      relativePath: relativePath,
+      note: 'Returning relative path for frontend URL transformation'
+    });
     
     res.json({ 
       success: true, 
-      imageUrl: imageUrl,
-      filename: req.file.filename 
+      imageUrl: relativePath, // Return relative path instead of full URL
+      filename: optimizedFilename,
+      optimized: true,
+      uploadPath: path.join(__dirname, '..', 'uploads', 'images', optimizedFilename) // Debug info
     });
   } catch (error) {
     console.error('Error uploading image:', error);
@@ -400,6 +474,33 @@ router.post('/webhook/cache-invalidate', async (req, res) => {
   } catch (error) {
     console.error('Error in webhook cache invalidation:', error);
     res.status(500).json({ error: 'Failed to invalidate cache via webhook' });
+  }
+});
+
+// Debug endpoint to understand user identification issues
+router.get('/debug/user-id', (req, res) => {
+  try {
+    const debugInfo = getUserIdentificationDebug(req);
+    const userId = getUserIdentifier(req);
+    
+    res.json({
+      userId: userId,
+      debug: debugInfo,
+      headers: {
+        userAgent: req.get('User-Agent'),
+        acceptLanguage: req.get('Accept-Language'),
+        xForwardedFor: req.get('X-Forwarded-For'),
+        xRealIp: req.get('X-Real-IP')
+      },
+      ip: req.ip,
+      connection: {
+        remoteAddress: req.connection?.remoteAddress,
+        socketRemoteAddress: req.socket?.remoteAddress
+      }
+    });
+  } catch (error) {
+    console.error('Debug endpoint error:', error);
+    res.status(500).json({ error: 'Debug failed' });
   }
 });
 

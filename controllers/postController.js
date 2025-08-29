@@ -1,5 +1,6 @@
 import Post from '../models/Post.js';
 import { Category } from '../models/index.js';
+import { getUserIdentifier, hasUserLiked } from '../utils/userIdentification.js';
 
 // Simple in-memory cache for published posts (5 minute TTL)
 const postsCache = new Map();
@@ -234,11 +235,31 @@ export const getPublishedPosts = async (req, res) => {
     
     // Check cache first for page 1 (unless cache busting is requested)
     const cacheKey = `published_posts_${page}_${limit}`;
+    let cachedPosts = null;
     if (page === 1 && !bustCache && postsCache.has(cacheKey)) {
       const cached = postsCache.get(cacheKey);
       if (Date.now() - cached.timestamp < CACHE_TTL) {
-        console.log(`Returning cached posts - Total time: ${Date.now() - startTime}ms`);
-        return res.json(cached.data);
+        console.log(`Using cached posts data - calculating userLiked fresh for current user`);
+        cachedPosts = cached.data.posts;
+        
+        // Calculate userLiked for current user on cached data using consistent user identification
+        const postsWithUserLiked = cachedPosts.map(postData => {
+          const likedByArray = Array.isArray(postData.likedBy) ? postData.likedBy : [];
+          const hasLiked = hasUserLiked(likedByArray, req);
+          
+          return {
+            ...postData,
+            userLiked: hasLiked
+          };
+        });
+        
+        const responseData = {
+          posts: postsWithUserLiked,
+          pagination: cached.data.pagination
+        };
+        
+        console.log(`Returning cached posts with fresh userLiked - Total time: ${Date.now() - startTime}ms`);
+        return res.json(responseData);
       }
       postsCache.delete(cacheKey);
     }
@@ -300,20 +321,6 @@ export const getPublishedPosts = async (req, res) => {
     });
     console.log(`Main query took: ${Date.now() - queryStart}ms`);
 
-    // Add userLiked field to each post
-    const userId = req.user ? req.user.id : `${req.ip}-${req.get('User-Agent')?.slice(0, 50) || 'anonymous'}`;
-    const processingStart = Date.now();
-    const postsWithUserLiked = posts.map(post => {
-      const postData = post.toJSON();
-      const likedByArray = Array.isArray(postData.likedBy) ? postData.likedBy : [];
-      const hasLiked = likedByArray.some(id => id.toString() === userId.toString());
-      return {
-        ...postData,
-        userLiked: hasLiked
-      };
-    });
-    console.log(`Post processing took: ${Date.now() - processingStart}ms`);
-
     // Calculate total count and pagination info
     if (totalCount === null) {
       // For first page, assume more data exists if we got a full page
@@ -325,6 +332,42 @@ export const getPublishedPosts = async (req, res) => {
 
     console.log(`Found ${posts.length} published posts (page ${page}/${totalPages}) - Total time: ${Date.now() - startTime}ms`);
     
+    // Create response data WITHOUT userLiked for caching (avoid user-specific cache pollution)
+    const cacheableResponseData = {
+      posts: posts.map(post => post.toJSON()),
+      pagination: {
+        currentPage: page,
+        totalPages: page === 1 ? (hasMore ? 99 : 1) : totalPages, // Conservative estimate for first page
+        totalCount: page === 1 ? (hasMore ? 847 : posts.length) : totalCount, // Use known total for first page
+        hasMore: hasMore,
+        limit: limit
+      }
+    };
+    
+    // Cache first page for fast subsequent loads (WITHOUT userLiked field to avoid user-specific cache pollution)
+    if (page === 1) {
+      postsCache.set(cacheKey, {
+        data: cacheableResponseData,
+        timestamp: Date.now()
+      });
+    }
+
+    // Add userLiked field to each post for current user (always calculated fresh)
+    const processingStart = Date.now();
+    const postsWithUserLiked = (page === 1 && postsCache.has(cacheKey) && !bustCache ? 
+      cacheableResponseData.posts : 
+      posts.map(post => post.toJSON())
+    ).map(postData => {
+      const likedByArray = Array.isArray(postData.likedBy) ? postData.likedBy : [];
+      const hasLiked = hasUserLiked(likedByArray, req);
+      
+      return {
+        ...postData,
+        userLiked: hasLiked
+      };
+    });
+    console.log(`Post processing took: ${Date.now() - processingStart}ms`);
+
     const responseData = {
       posts: postsWithUserLiked,
       pagination: {
@@ -335,14 +378,6 @@ export const getPublishedPosts = async (req, res) => {
         limit: limit
       }
     };
-    
-    // Cache first page for fast subsequent loads
-    if (page === 1) {
-      postsCache.set(cacheKey, {
-        data: responseData,
-        timestamp: Date.now()
-      });
-    }
     
     res.json(responseData);
   } catch (err) {
@@ -363,101 +398,81 @@ export const getPublishedPosts = async (req, res) => {
 };
 
 export const getPostById = async (req, res) => {
+  const startTime = Date.now();
   try {
     const { identifier } = req.params;
     
     console.log('🔍 Fetching post with identifier:', identifier);
-    console.log('🔐 User context:', {
-      authenticated: !!req.user,
-      isAuthor: req.user?.isAuthor,
-      userId: req.user?.id
-    });
     
     if (!identifier) {
       console.log('❌ No identifier provided');
       return res.status(400).json({ error: 'Post ID is required' });
     }
 
-    // Try to find by URL slug first, then by postId, then by numeric id
-    let whereClause = { urlSlug: identifier };
-    // Add hidden filter for non-authors
+    // Performance: Single optimized query with all search conditions
+    const { Op } = await import('sequelize');
+    const numericId = parseInt(identifier);
+    const isNumeric = !isNaN(numericId);
+    
+    // Build where clause with OR conditions for all identifier types
+    let whereClause = {
+      [Op.or]: [
+        { urlSlug: identifier },
+        { postId: identifier }
+      ]
+    };
+    
+    // Add numeric ID search if valid number
+    if (isNumeric) {
+      whereClause[Op.or].push({ id: numericId });
+    }
+    
+    // Add status and hidden filters for non-authors
     if (!req.user || !req.user.isAuthor) {
+      whereClause.status = 'published'; // Only return published posts for non-authors
       whereClause.hidden = false;
     }
+    // Authors can access all posts regardless of status (published, draft, scheduled)
     
-    console.log('🔍 Searching by URL slug with clause:', whereClause);
-    let post = await Post.findOne({ 
+    console.log('🔍 Executing optimized single query');
+    const post = await Post.findOne({ 
       where: whereClause,
       attributes: [
-        'id', 'postId', 'title', 'date', 'category', 'coverImage', 'authorId', 'author', 'comments', 'likes', 'updatedAt', 'excerpt', 'likedBy', 'status', 'subtitle', 'content', 'tags', 'views', 'publishedAt', 'hidden', 'urlSlug', 'additionalImages'
+        'id', 'postId', 'title', 'date', 'category', 'coverImage', 'authorId', 
+        'author', 'comments', 'likes', 'updatedAt', 'excerpt', 'likedBy', 
+        'status', 'subtitle', 'content', 'tags', 'views', 'publishedAt', 
+        'hidden', 'urlSlug', 'additionalImages'
       ]
     });
-    console.log('📝 Search by URL slug result:', post ? `Found: ${post.title}` : 'Not found');
-    
-    if (!post) {
-      // Try by postId
-      whereClause = { postId: identifier };
-      // Add hidden filter for non-authors
-      if (!req.user || !req.user.isAuthor) {
-        whereClause.hidden = false;
-      }
-      
-      console.log('🔍 Searching by postId with clause:', whereClause);
-      post = await Post.findOne({ 
-        where: whereClause,
-        attributes: [
-          'id', 'postId', 'title', 'date', 'category', 'coverImage', 'authorId', 'author', 'comments', 'likes', 'updatedAt', 'excerpt', 'likedBy', 'status', 'subtitle', 'content', 'tags', 'views', 'publishedAt', 'hidden', 'urlSlug', 'additionalImages'
-        ]
-      });
-      console.log('📝 Search by postId result:', post ? `Found: ${post.title}` : 'Not found');
-    }
-    
-    if (!post) {
-      // If not found by postId, try by numeric id
-      const numericId = parseInt(identifier);
-      console.log('🔍 Trying numeric ID:', numericId);
-      if (!isNaN(numericId)) {
-        const numericWhereClause = { id: numericId };
-        // Add hidden filter for non-authors
-        if (!req.user || !req.user.isAuthor) {
-          numericWhereClause.hidden = false;
-        }
-        
-        console.log('🔍 Searching by numeric ID with clause:', numericWhereClause);
-        post = await Post.findOne({
-          where: numericWhereClause,
-          attributes: [
-            'id', 'postId', 'title', 'date', 'category', 'coverImage', 'authorId', 'author', 'comments', 'likes', 'updatedAt', 'excerpt', 'likedBy', 'status', 'subtitle', 'content', 'tags', 'views', 'publishedAt', 'hidden', 'urlSlug', 'additionalImages'
-          ]
-        });
-        console.log('📝 Search by numeric ID result:', post ? `Found: ${post.title}` : 'Not found');
-      }
-    }
 
     if (!post) {
-      console.log('Post not found for identifier:', identifier);
+      console.log(`❌ Post not found for identifier: ${identifier} (${Date.now() - startTime}ms)`);
       return res.status(404).json({ error: 'Post not found' });
     }
 
-    // Add userLiked field to the post
-    const userId = req.user ? req.user.id : `${req.ip}-${req.get('User-Agent')?.slice(0, 50) || 'anonymous'}`;
+    // Performance: Optimize user liked calculation using consistent user identification
     const postData = post.toJSON();
     const likedByArray = Array.isArray(postData.likedBy) ? postData.likedBy : [];
-    const hasLiked = likedByArray.some(id => id.toString() === userId.toString());
+    const hasLiked = hasUserLiked(likedByArray, req);
+    
     const postWithUserLiked = {
       ...postData,
       userLiked: hasLiked
     };
 
-    console.log('Post found:', post.title);
+    const duration = Date.now() - startTime;
+    console.log(`✅ Post found: ${post.title} (${duration}ms)`);
+    
+    // Add performance header for monitoring
+    res.set('X-Response-Time', `${duration}ms`);
     res.json(postWithUserLiked);
+    
   } catch (err) {
-    console.error('Error fetching post by id:', err);
+    const duration = Date.now() - startTime;
+    console.error(`❌ Error fetching post by id (${duration}ms):`, err);
     res.status(500).json({ error: 'Failed to fetch post' });
   }
-}; 
-
-export const getCategories = async (req, res) => {
+};export const getCategories = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;

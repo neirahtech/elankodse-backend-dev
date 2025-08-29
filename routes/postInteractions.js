@@ -3,8 +3,22 @@ import auth from '../middleware/auth.js';
 import requireAuthor from '../middleware/author.js';
 import Post from '../models/Post.js';
 import { clearPostsCache } from '../controllers/postController.js';
+import { getUserIdentifier, hasUserLiked, getUserIdentificationDebug } from '../utils/userIdentification.js';
 
 const router = express.Router();
+
+// In-memory cache for rate limiting
+const rateLimitCache = new Map();
+
+// Clean up old entries every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, timestamp] of rateLimitCache.entries()) {
+    if (now - timestamp > 60000) { // Remove entries older than 1 minute
+      rateLimitCache.delete(key);
+    }
+  }
+}, 300000);
 
 // Toggle like/unlike a post
 router.post('/:id/toggle-like', async (req, res) => {
@@ -23,8 +37,29 @@ router.post('/:id/toggle-like', async (req, res) => {
     console.log('🔍 Post found:', post ? `${post.title} (likes: ${post.likes})` : 'null');
     if (!post) return res.status(404).json({ error: 'Post not found' });
     
-    // For anonymous users, use a combination of IP and user agent for better consistency
-    const userId = req.user ? req.user.id : `${req.ip}-${req.get('User-Agent')?.slice(0, 50) || 'anonymous'}`;
+    // Rate limiting: Prevent rapid-fire requests
+    const now = Date.now();
+    const rateLimitKey = `${req.params.id}_${req.ip}_${req.get('User-Agent')?.slice(0, 50)}`;
+    const lastRequest = rateLimitCache.get(rateLimitKey) || 0;
+    const timeSinceLastRequest = now - lastRequest;
+    
+    if (timeSinceLastRequest < 1000) { // 1 second minimum between requests
+      console.log('🚫 Rate limited: Too many requests too quickly');
+      return res.status(429).json({ 
+        error: 'Rate limited. Please wait before trying again.',
+        likes: post.likes,
+        userLiked: false
+      });
+    }
+    
+    // Update rate limit cache
+    rateLimitCache.set(rateLimitKey, now);
+    
+    // Get consistent user identifier using shared utility
+    const userId = getUserIdentifier(req);
+    const debugInfo = getUserIdentificationDebug(req);
+    
+    console.log('🔍 User identification:', debugInfo);
     
     // Ensure likedBy is an array
     let likedBy = post.likedBy || [];
@@ -34,49 +69,59 @@ router.post('/:id/toggle-like', async (req, res) => {
     
     console.log('🔍 Like toggle debug:', {
       postId: req.params.id,
-      userId,
+      userId: debugInfo.userId,
+      isAuthenticated: debugInfo.isAuthenticated,
       currentLikes: post.likes,
-      currentLikedBy: likedBy,
-      userAgent: req.get('User-Agent')?.slice(0, 50)
+      currentLikedBy: likedBy.length + ' users'
     });
     
-    const hasLiked = likedBy.some(id => id.toString() === userId.toString());
+    // Use shared utility to check if user has liked
+    const hasLiked = hasUserLiked(likedBy, req);
     
-    console.log('🔍 Has liked:', hasLiked);
+    console.log('🔍 Has liked check:', {
+      hasLiked,
+      userId: userId.toString().slice(0, 20) + '...',
+      likedByArray: likedBy.map(id => id.toString().slice(0, 20) + '...'),
+      exactMatch: likedBy.find(id => id.toString() === userId.toString())
+    });
+    
+    let newLikes, newLikedBy;
     
     if (hasLiked) {
       // Unlike
       console.log('🔄 Unlike operation');
-      post.likes = Math.max(0, (post.likes || 0) - 1);
-      post.likedBy = likedBy.filter(id => id.toString() !== userId.toString());
+      newLikes = Math.max(0, (post.likes || 0) - 1);
+      newLikedBy = likedBy.filter(id => id.toString() !== userId.toString());
     } else {
       // Like
       console.log('🔄 Like operation');
-      post.likes = (post.likes || 0) + 1;
-      post.likedBy = [...likedBy, userId];
+      newLikes = (post.likes || 0) + 1;
+      newLikedBy = [...likedBy, userId];
     }
     
-    console.log('🔍 After operation:', {
-      newLikes: post.likes,
-      newLikedBy: post.likedBy
+    // Clean up any invalid entries in likedBy array (optional maintenance)
+    newLikedBy = newLikedBy.filter(id => id && id.toString().length > 0);
+    
+    console.log('🔍 Before save:', {
+      oldLikes: post.likes,
+      newLikes,
+      oldLikedBy: post.likedBy?.length || 0,
+      newLikedBy: newLikedBy.length
     });
+    
+    // Update the post with new values
+    post.likes = newLikes;
+    post.likedBy = newLikedBy;
     
     await post.save();
     
-    // Verify the save worked by fetching the post again
-    // Use the same lookup method that worked initially
-    let savedPost;
-    if (post.postId === req.params.id) {
-      // Found by postId (Blogger ID)
-      savedPost = await Post.findOne({ where: { postId: req.params.id } });
-    } else {
-      // Found by database id
-      savedPost = await Post.findOne({ where: { id: parseInt(req.params.id) } });
-    }
+    // Clear cache to ensure consistency between published posts and individual post APIs
+    clearPostsCache();
     
-    console.log('🔍 After save verification:', {
-      savedLikes: savedPost?.likes || 'not found',
-      savedLikedBy: savedPost?.likedBy || 'not found'
+    console.log('🔍 After save:', {
+      finalLikes: post.likes,
+      finalLikedBy: post.likedBy?.length || 0,
+      userLikedResult: !hasLiked
     });
     
     res.json({ 
@@ -143,6 +188,9 @@ router.post('/:id/like', auth, async (req, res) => {
   post.likedBy.push(userId);
   await post.save();
     
+  // Clear cache to ensure consistency between APIs
+  clearPostsCache();
+    
   res.json({ likes: post.likes });
   } catch (error) {
     console.error('Error liking post:', error);
@@ -153,53 +201,99 @@ router.post('/:id/like', auth, async (req, res) => {
 // View a post (increment views, prevent abuse)
 router.post('/:id/view', async (req, res) => {
   try {
-  const post = await Post.findOne({ where: { postId: req.params.id } });
-  if (!post) return res.status(404).json({ error: 'Post not found' });
-  
-  // Ensure viewedBy is always an array
-  if (!Array.isArray(post.viewedBy)) {
-    post.viewedBy = [];
-  }
-  
-  const userId = req.user ? req.user.id : null;
-  const ip = req.ip;
-  const now = new Date();
-  let canIncrement = true;
-  
-  // Check if user or IP has viewed in last 6 hours
-  if (userId) {
-    const last = post.viewedBy.find(v => v.user && v.user.toString() === userId);
-    if (last && now - new Date(last.lastViewed) < 6*60*60*1000) canIncrement = false;
-  } else {
-    const last = post.viewedBy.find(v => v.ip === ip);
-    if (last && now - new Date(last.lastViewed) < 6*60*60*1000) canIncrement = false;
-  }
-  
-  if (canIncrement) {
+    const postId = req.params.id;
+    console.log('Attempting to increment views for post ID:', postId);
+    
+    const post = await Post.findOne({ where: { postId: postId } });
+    if (!post) {
+      console.warn('Post not found for view increment, ID:', postId);
+      return res.status(404).json({ error: 'Post not found' });
+    }
+    
+    console.log('Found post for view increment:', { postId: post.postId, title: post.title?.substring(0, 50) + '...' });
+    
+    // Ensure viewedBy is always an array
+    if (!Array.isArray(post.viewedBy)) {
+      post.viewedBy = [];
+    }
+    
+    const userId = req.user ? req.user.id : null;
+    
+    // Get real client IP (handles proxy situations)
+    const clientIP = req.ip || 
+                    req.connection.remoteAddress || 
+                    req.socket.remoteAddress ||
+                    (req.connection.socket ? req.connection.socket.remoteAddress : null) ||
+                    req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+                    req.headers['x-real-ip'] ||
+                    'unknown';
+    
+    // For anonymous users, create unique identifier like in like functionality
+    const anonymousId = userId ? null : `anon_${clientIP}_${Buffer.from((req.get('User-Agent') || '') + (req.get('Accept-Language') || '')).toString('base64').slice(0, 20)}`;
+    
+    console.log('🔍 View tracking debug:', {
+      postId,
+      userId: userId || 'anonymous',
+      clientIP,
+      anonymousId: anonymousId?.slice(0, 30) + '...' || 'N/A'
+    });
+    
+    const now = new Date();
+    let canIncrement = true;
+    
+    // Check if user or anonymous identifier has viewed in last 6 hours
+    if (userId) {
+      // For authenticated users, check by user ID
+      const last = post.viewedBy.find(v => v.user && v.user.toString() === userId.toString());
+      if (last && now - new Date(last.lastViewed) < 6*60*60*1000) {
+        canIncrement = false;
+        console.log('🔍 View increment blocked - authenticated user viewed recently');
+      }
+    } else {
+      // For anonymous users, check by the unique anonymous identifier
+      const last = post.viewedBy.find(v => v.anonymousId === anonymousId);
+      if (last && now - new Date(last.lastViewed) < 6*60*60*1000) {
+        canIncrement = false;
+        console.log('🔍 View increment blocked - anonymous user viewed recently');
+      }
+    }
+    
+    if (canIncrement) {
       post.views = (post.views || 0) + 1;
       if (!post.viewedBy) post.viewedBy = [];
       
-    if (userId) {
-      const idx = post.viewedBy.findIndex(v => v.user && v.user.toString() === userId);
+      if (userId) {
+        // For authenticated users, store by user ID
+        const idx = post.viewedBy.findIndex(v => v.user && v.user.toString() === userId.toString());
         if (idx >= 0) {
           post.viewedBy[idx].lastViewed = now;
         } else {
           post.viewedBy.push({ user: userId, lastViewed: now });
         }
-    } else {
-      const idx = post.viewedBy.findIndex(v => v.ip === ip);
+      } else {
+        // For anonymous users, store by anonymous identifier
+        const idx = post.viewedBy.findIndex(v => v.anonymousId === anonymousId);
         if (idx >= 0) {
           post.viewedBy[idx].lastViewed = now;
         } else {
-          post.viewedBy.push({ ip, lastViewed: now });
+          post.viewedBy.push({ anonymousId, ip: clientIP, lastViewed: now });
         }
+      }
+      
+      // Clean up old entries (older than 7 days) to prevent array from growing too large
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      post.viewedBy = post.viewedBy.filter(v => new Date(v.lastViewed) > sevenDaysAgo);
+      
+      await post.save();
+      console.log('✅ Successfully incremented view count for post:', postId, 'New count:', post.views);
+    } else {
+      console.log('⏭️  View increment skipped (recent view) for post:', postId);
     }
-    await post.save();
-  }
-  
-  res.json({ views: post.views || 0 });
+    
+    res.json({ views: post.views || 0 });
   } catch (error) {
-    console.error('Error recording view:', error);
+    console.error('Error recording view for post ID:', req.params.id);
+    console.error('Error details:', error);
     res.status(500).json({ error: 'Failed to record view' });
   }
 });
@@ -221,10 +315,40 @@ router.delete('/:id/like', auth, async (req, res) => {
     post.likedBy = post.likedBy.filter(id => id.toString() !== userId.toString());
   await post.save();
     
+  // Clear cache to ensure consistency between APIs
+  clearPostsCache();
+    
   res.json({ likes: post.likes });
   } catch (error) {
     console.error('Error unliking post:', error);
     res.status(500).json({ error: 'Failed to unlike post' });
+  }
+});
+
+// Debug endpoint to understand user identification issues
+router.get('/debug/user-id', (req, res) => {
+  try {
+    const debugInfo = getUserIdentificationDebug(req);
+    const userId = getUserIdentifier(req);
+    
+    res.json({
+      userId: userId,
+      debug: debugInfo,
+      headers: {
+        userAgent: req.get('User-Agent'),
+        acceptLanguage: req.get('Accept-Language'),
+        xForwardedFor: req.get('X-Forwarded-For'),
+        xRealIp: req.get('X-Real-IP')
+      },
+      ip: req.ip,
+      connection: {
+        remoteAddress: req.connection?.remoteAddress,
+        socketRemoteAddress: req.socket?.remoteAddress
+      }
+    });
+  } catch (error) {
+    console.error('Debug endpoint error:', error);
+    res.status(500).json({ error: 'Debug failed' });
   }
 });
 

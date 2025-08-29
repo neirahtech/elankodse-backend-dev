@@ -107,6 +107,15 @@ const Post = sequelize.define('Post', {
     {
       fields: ['status', 'hidden', 'publishedAt']
     },
+    // Optimized index for post detail page lookups
+    {
+      name: 'post_detail_lookup',
+      fields: ['urlSlug', 'status', 'hidden']
+    },
+    {
+      name: 'post_detail_lookup_id',
+      fields: ['postId', 'status', 'hidden']
+    },
     // Individual indexes for performance
     {
       fields: ['publishedYear', 'publishedMonth']
@@ -161,27 +170,41 @@ const Post = sequelize.define('Post', {
       }
     },
     
-    // Update diary entries after creating a post
+    // Update diary entries and clear caches after creating a post
     afterCreate: async (post, options) => {
       try {
-        // Import here to avoid circular dependency
+        // Import here to avoid circular dependencies
         const { updateDiaryForPost } = await import('../utils/diaryUtils.js');
+        const { clearPostsCache, clearDiaryAndPostsCache } = await import('../controllers/postController.js');
+        
+        // Update diary entries
         await updateDiaryForPost(post);
+        
+        // Clear all caches to ensure updates are reflected everywhere
+        clearDiaryAndPostsCache();
+        clearPostsCache();
       } catch (error) {
         // Don't throw error to avoid breaking post creation
-        console.error('Error updating diary after post creation:', error);
+        console.error('Error updating diary and clearing cache after post creation:', error);
       }
     },
     
-    // Update diary entries after updating a post
+    // Update diary entries and clear caches after updating a post
     afterUpdate: async (post, options) => {
       try {
-        // Import here to avoid circular dependency
+        // Import here to avoid circular dependencies
         const { updateDiaryForPost } = await import('../utils/diaryUtils.js');
+        const { clearPostsCache, clearDiaryAndPostsCache } = await import('../controllers/postController.js');
+        
+        // Update diary entries
         await updateDiaryForPost(post);
+        
+        // Clear all caches to ensure updates are reflected everywhere
+        clearDiaryAndPostsCache();
+        clearPostsCache();
       } catch (error) {
         // Don't throw error to avoid breaking post update
-        console.error('Error updating diary after post update:', error);
+        console.error('Error updating diary and clearing cache after post update:', error);
       }
     },
     

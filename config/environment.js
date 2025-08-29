@@ -28,6 +28,12 @@ const config = {
   // Get the appropriate server URL based on environment
   getServerUrl: () => {
     const urls = getUrls(process.env.NODE_ENV);
+    console.log('🌐 Server URL Resolution Debug:', {
+      NODE_ENV: process.env.NODE_ENV,
+      PRODUCTION_URL: process.env.PRODUCTION_URL,
+      isProduction: process.env.NODE_ENV === 'production',
+      resolvedBackendUrl: urls.backend
+    });
     return urls.backend;
   },
   

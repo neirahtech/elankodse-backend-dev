@@ -13,6 +13,8 @@ const router = express.Router();
 // Middleware to track page views (public endpoint)
 router.post('/track', async (req, res) => {
   try {
+    console.log('Analytics track request body:', JSON.stringify(req.body, null, 2));
+    
     const {
       postId,
       url,
@@ -25,13 +27,27 @@ router.post('/track', async (req, res) => {
 
     // Validate required fields
     if (!url) {
+      console.warn('Analytics track request missing URL:', req.body);
       return res.status(400).json({ error: 'URL is required' });
+    }
+
+    // Validate URL format
+    try {
+      new URL(url);
+    } catch (error) {
+      console.warn('Analytics track request invalid URL format:', url);
+      return res.status(400).json({ error: 'Invalid URL format' });
     }
 
     const ipAddress = req.ip || req.connection.remoteAddress;
     const userAgent = req.get('User-Agent');
     const referrer = req.get('Referer');
     const userId = req.user ? req.user.id : null;
+
+    console.log('Analytics track data:', {
+      postId, url, title, sessionId, timeOnPage, scrollDepth, visitorId,
+      ipAddress, userAgent: userAgent?.substring(0, 100) + '...'
+    });
 
     const pageView = await analyticsService.recordPageView({
       postId,
@@ -45,15 +61,28 @@ router.post('/track', async (req, res) => {
       timeOnPage,
       scrollDepth,
       visitorId
-    });
+    }, req); // Pass req object for consistent user identification
 
-    res.json({ 
-      success: true, 
-      visitorId: pageView ? pageView.visitorId : visitorId 
-    });
+    if (pageView) {
+      res.json({ 
+        success: true, 
+        visitorId: pageView.visitorId
+      });
+    } else {
+      // Bot traffic or filtered out
+      res.json({ 
+        success: true, 
+        filtered: true,
+        reason: 'Bot traffic or filtered'
+      });
+    }
   } catch (error) {
-    console.error('Error tracking page view:', error);
-    res.status(500).json({ error: 'Failed to track page view' });
+    console.error('Analytics track error:', error);
+    console.error('Request body that caused error:', req.body);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      message: process.env.NODE_ENV === 'development' ? error.message : 'Analytics tracking failed'
+    });
   }
 });
 
@@ -160,6 +189,359 @@ router.get('/dashboard', auth, async (req, res) => {
   }
 });
 
+// Get analytics for all published posts with pagination (public endpoint)
+router.get('/all-posts-detailed', async (req, res) => {
+  try {
+    const { period = '30days', limit = 20, page = 1, search = '' } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    let dateFilter = {};
+    const now = new Date();
+    
+    switch (period) {
+      case '7days':
+        dateFilter = { [Op.gte]: new Date(now - 7 * 24 * 60 * 60 * 1000) };
+        break;
+      case '30days':
+        dateFilter = { [Op.gte]: new Date(now - 30 * 24 * 60 * 60 * 1000) };
+        break;
+      case 'thisMonth':
+        dateFilter = { 
+          [Op.gte]: new Date(now.getFullYear(), now.getMonth(), 1),
+          [Op.lt]: new Date(now.getFullYear(), now.getMonth() + 1, 1)
+        };
+        break;
+      case 'lastMonth':
+        dateFilter = { 
+          [Op.gte]: new Date(now.getFullYear(), now.getMonth() - 1, 1),
+          [Op.lt]: new Date(now.getFullYear(), now.getMonth(), 1)
+        };
+        break;
+      default:
+        dateFilter = {};
+    }
+
+    // Build where condition for posts
+    const postWhere = {
+      status: 'published',
+      hidden: false
+    };
+
+    // Add search filter if provided
+    if (search && search.trim()) {
+      postWhere[Op.or] = [
+        {
+          title: {
+            [Op.like]: `%${search.trim()}%`
+          }
+        },
+        {
+          excerpt: {
+            [Op.like]: `%${search.trim()}%`
+          }
+        }
+      ];
+    }
+
+    // First get the total count of published posts (with search filter)
+    const totalCount = await Post.count({
+      where: postWhere
+    });
+
+    // Get all published posts with pagination and search
+    const posts = await Post.findAll({
+      attributes: ['id', 'title', 'createdAt', 'status', 'views', 'likes', 'comments'],
+      where: postWhere,
+      order: [['createdAt', 'DESC']],
+      limit: parseInt(limit),
+      offset,
+      raw: true
+    });
+
+    const postsWithAnalytics = [];
+
+    for (const post of posts) {
+      // Get total views for this post from PageView table
+      const totalViews = await PageView.count({
+        where: {
+          postId: post.id.toString(),
+          isBot: false
+        }
+      });
+
+      // Get views for the period
+      const periodViews = await PageView.count({
+        where: {
+          postId: post.id.toString(),
+          isBot: false,
+          ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter })
+        }
+      });
+
+      // Get unique visitors
+      const uniqueVisitors = await PageView.count({
+        distinct: true,
+        col: 'visitorId',
+        where: {
+          postId: post.id.toString(),
+          isBot: false,
+          ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter })
+        }
+      });
+
+      // Get daily views for the period
+      const dailyViews = await PageView.findAll({
+        attributes: [
+          [sequelize.fn('DATE', sequelize.col('createdAt')), 'date'],
+          [sequelize.fn('COUNT', sequelize.col('id')), 'views']
+        ],
+        where: {
+          postId: post.id.toString(),
+          isBot: false,
+          ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter })
+        },
+        group: [sequelize.fn('DATE', sequelize.col('createdAt'))],
+        order: [[sequelize.fn('DATE', sequelize.col('createdAt')), 'ASC']],
+        raw: true
+      });
+
+      // Include all published posts, even those without analytics data
+      postsWithAnalytics.push({
+        post: {
+          id: post.id,
+          title: post.title,
+          createdAt: post.createdAt,
+          status: post.status
+        },
+        analytics: {
+          totalViews: totalViews || post.views || 0,
+          periodViews: periodViews || 0,
+          uniqueVisitors: uniqueVisitors || 0,
+          dailyViews: dailyViews.map(dv => ({
+            date: dv.date,
+            views: parseInt(dv.views)
+          }))
+        }
+      });
+    }
+
+    const totalPages = Math.ceil(totalCount / parseInt(limit));
+    const hasMore = parseInt(page) < totalPages;
+
+    res.json({
+      period,
+      totalPosts: totalCount,
+      posts: postsWithAnalytics,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages,
+        totalCount,
+        hasMore,
+        limit: parseInt(limit)
+      }
+    });
+  } catch (error) {
+    console.error('Error getting all posts analytics:', error);
+    res.status(500).json({ error: 'Failed to get posts analytics' });
+  }
+});
+
+// Get individual post analytics with charts (protected route)
+router.get('/post/:postId/detailed', async (req, res) => {
+  try {
+    const { postId } = req.params;
+    const { period = '30days' } = req.query;
+
+    // Get the post details first - handle both numeric ID and string postId
+    let post;
+    
+    // First try to find by primary key (numeric id)
+    if (!isNaN(postId)) {
+      post = await Post.findByPk(parseInt(postId), {
+        attributes: ['id', 'postId', 'title', 'urlSlug', 'createdAt', 'status']
+      });
+    }
+    
+    // If not found or if postId is not numeric, try to find by postId field
+    if (!post) {
+      post = await Post.findOne({
+        where: { postId: postId },
+        attributes: ['id', 'postId', 'title', 'urlSlug', 'createdAt', 'status']
+      });
+    }
+
+    if (!post) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    // Use the actual database ID for all PageView queries
+    const actualPostId = post.id;
+
+    let dateFilter = {};
+    const now = new Date();
+    
+    switch (period) {
+      case '7days':
+        dateFilter = { [Op.gte]: new Date(now - 7 * 24 * 60 * 60 * 1000) };
+        break;
+      case '30days':
+        dateFilter = { [Op.gte]: new Date(now - 30 * 24 * 60 * 60 * 1000) };
+        break;
+      case 'thisMonth':
+        dateFilter = { 
+          [Op.gte]: new Date(now.getFullYear(), now.getMonth(), 1),
+          [Op.lt]: new Date(now.getFullYear(), now.getMonth() + 1, 1)
+        };
+        break;
+      case 'lastMonth':
+        dateFilter = { 
+          [Op.gte]: new Date(now.getFullYear(), now.getMonth() - 1, 1),
+          [Op.lt]: new Date(now.getFullYear(), now.getMonth(), 1)
+        };
+        break;
+      default:
+        dateFilter = {};
+    }
+
+    // Get daily views for the post
+    const dailyViews = await PageView.findAll({
+      attributes: [
+        [sequelize.fn('DATE', sequelize.col('createdAt')), 'date'],
+        [sequelize.fn('COUNT', sequelize.col('id')), 'views'],
+        [sequelize.fn('COUNT', sequelize.literal('DISTINCT visitorId')), 'uniqueViews']
+      ],
+      where: {
+        postId: actualPostId.toString(), // Convert to string as PageView stores postId as string
+        isBot: false,
+        ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter })
+      },
+      group: [sequelize.fn('DATE', sequelize.col('createdAt'))],
+      order: [[sequelize.fn('DATE', sequelize.col('createdAt')), 'ASC']],
+      raw: true
+    });
+
+    // Get hourly distribution for today
+    const hourlyViews = await PageView.findAll({
+      attributes: [
+        [sequelize.fn('HOUR', sequelize.col('createdAt')), 'hour'],
+        [sequelize.fn('COUNT', sequelize.col('id')), 'views']
+      ],
+      where: {
+        postId: actualPostId.toString(),
+        isBot: false,
+        createdAt: {
+          [Op.gte]: new Date(now.toDateString())
+        }
+      },
+      group: [sequelize.fn('HOUR', sequelize.col('createdAt'))],
+      order: [[sequelize.fn('HOUR', sequelize.col('createdAt')), 'ASC']],
+      raw: true
+    });
+
+    // Get device breakdown
+    const deviceBreakdown = await PageView.findAll({
+      attributes: [
+        'deviceType',
+        [sequelize.fn('COUNT', sequelize.col('id')), 'views']
+      ],
+      where: {
+        postId: actualPostId.toString(),
+        isBot: false,
+        ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter })
+      },
+      group: ['deviceType'],
+      order: [[sequelize.fn('COUNT', sequelize.col('id')), 'DESC']],
+      raw: true
+    });
+
+    // Get traffic sources
+    const trafficSources = await PageView.findAll({
+      attributes: [
+        'referrerDomain',
+        [sequelize.fn('COUNT', sequelize.col('id')), 'views']
+      ],
+      where: {
+        postId: actualPostId.toString(),
+        isBot: false,
+        referrerDomain: { [Op.not]: null },
+        ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter })
+      },
+      group: ['referrerDomain'],
+      order: [[sequelize.fn('COUNT', sequelize.col('id')), 'DESC']],
+      limit: 10,
+      raw: true
+    });
+
+    // Get overall post stats
+    const totalViews = await PageView.count({
+      where: {
+        postId: actualPostId.toString(),
+        isBot: false
+      }
+    });
+
+    const uniqueVisitors = await PageView.count({
+      distinct: true,
+      col: 'visitorId',
+      where: {
+        postId: actualPostId.toString(),
+        isBot: false
+      }
+    });
+
+    // Get average engagement metrics
+    const engagementMetrics = await PageView.findOne({
+      attributes: [
+        [sequelize.fn('AVG', sequelize.col('timeOnPage')), 'avgTimeOnPage'],
+        [sequelize.fn('AVG', sequelize.col('scrollDepth')), 'avgScrollDepth']
+      ],
+      where: {
+        postId: actualPostId.toString(),
+        isBot: false,
+        timeOnPage: { [Op.not]: null }
+      },
+      raw: true
+    });
+
+    res.json({
+      post: {
+        id: post.id,
+        postId: post.postId, // Include both IDs for frontend reference
+        title: post.title,
+        urlSlug: post.urlSlug,
+        createdAt: post.createdAt,
+        status: post.status
+      },
+      overview: {
+        totalViews,
+        uniqueVisitors,
+        avgTimeOnPage: Math.round(parseFloat(engagementMetrics?.avgTimeOnPage || 0)),
+        avgScrollDepth: Math.round(parseFloat(engagementMetrics?.avgScrollDepth || 0))
+      },
+      dailyViews: dailyViews.map(dv => ({
+        date: dv.date,
+        views: parseInt(dv.views),
+        uniqueViews: parseInt(dv.uniqueViews)
+      })),
+      hourlyViews: hourlyViews.map(hv => ({
+        hour: parseInt(hv.hour),
+        views: parseInt(hv.views)
+      })),
+      deviceBreakdown: deviceBreakdown.map(db => ({
+        device: db.deviceType || 'Unknown',
+        views: parseInt(db.views)
+      })),
+      trafficSources: trafficSources.map(ts => ({
+        source: ts.referrerDomain || 'Direct',
+        views: parseInt(ts.views)
+      }))
+    });
+  } catch (error) {
+    console.error('Error getting detailed post analytics:', error);
+    res.status(500).json({ error: 'Failed to get post analytics' });
+  }
+});
+
 // Get statistics for a specific post (protected route)
 router.get('/post/:postId', auth, async (req, res) => {
   try {
@@ -215,11 +597,41 @@ router.get('/post/:postId', auth, async (req, res) => {
   }
 });
 
+// Temporary test route (remove in production)
+router.get('/test-posts', async (req, res) => {
+  try {
+    console.log('📊 Test Analytics: /test-posts called');
+    
+    // Set proper UTF-8 headers for Tamil text
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    
+    const { limit = 20, period = '30days' } = req.query;
+    console.log(`📊 Test Analytics: Getting top posts (limit: ${limit}, period: ${period})`);
+    
+    const topPosts = await analyticsService.getTopPosts(parseInt(limit), period);
+    console.log(`📊 Test Analytics: Retrieved ${topPosts.length} posts`);
+    
+    res.json(topPosts);
+  } catch (error) {
+    console.error('Error getting test top posts:', error);
+    res.status(500).json({ error: 'Failed to get test top posts', details: error.message });
+  }
+});
+
 // Get top posts (protected route)
 router.get('/top-posts', auth, async (req, res) => {
   try {
+    console.log('📊 Analytics API: /top-posts called');
+    
+    // Set proper UTF-8 headers for Tamil text
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    
     const { limit = 20, period = '30days' } = req.query;
+    console.log(`📊 Analytics API: Getting top posts (limit: ${limit}, period: ${period})`);
+    
     const topPosts = await analyticsService.getTopPosts(parseInt(limit), period);
+    console.log(`📊 Analytics API: Retrieved ${topPosts.length} posts`);
+    
     res.json(topPosts);
   } catch (error) {
     console.error('Error getting top posts:', error);
@@ -351,6 +763,160 @@ router.get('/realtime', auth, async (req, res) => {
   } catch (error) {
     console.error('Error getting realtime stats:', error);
     res.status(500).json({ error: 'Failed to get realtime statistics' });
+  }
+});
+
+// Get Blogger-style analytics (protected route)
+router.get('/blogger-style', auth, async (req, res) => {
+  try {
+    const { period = '30days' } = req.query;
+    
+    // Get total all-time views
+    const totalViews = await PageView.count({
+      where: { isBot: false }
+    });
+
+    // Get today's views
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayViews = await PageView.count({
+      where: {
+        isBot: false,
+        viewDate: { [Op.gte]: todayStart }
+      }
+    });
+
+    // Get yesterday's views
+    const yesterdayStart = new Date();
+    yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+    yesterdayStart.setHours(0, 0, 0, 0);
+    const yesterdayEnd = new Date(yesterdayStart);
+    yesterdayEnd.setHours(23, 59, 59, 999);
+    const yesterdayViews = await PageView.count({
+      where: {
+        isBot: false,
+        viewDate: {
+          [Op.gte]: yesterdayStart,
+          [Op.lte]: yesterdayEnd
+        }
+      }
+    });
+
+    // Get this month's views
+    const thisMonthStart = new Date();
+    thisMonthStart.setDate(1);
+    thisMonthStart.setHours(0, 0, 0, 0);
+    const thisMonthViews = await PageView.count({
+      where: {
+        isBot: false,
+        viewDate: { [Op.gte]: thisMonthStart }
+      }
+    });
+
+    // Get last month's views
+    const lastMonthStart = new Date();
+    lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
+    lastMonthStart.setDate(1);
+    lastMonthStart.setHours(0, 0, 0, 0);
+    const lastMonthEnd = new Date(thisMonthStart.getTime() - 1);
+    const lastMonthViews = await PageView.count({
+      where: {
+        isBot: false,
+        viewDate: {
+          [Op.gte]: lastMonthStart,
+          [Op.lte]: lastMonthEnd
+        }
+      }
+    });
+
+    res.json({
+      totalViews,
+      todayViews,
+      yesterdayViews,
+      thisMonthViews,
+      lastMonthViews
+    });
+  } catch (error) {
+    console.error('Error getting Blogger-style analytics:', error);
+    res.status(500).json({ error: 'Failed to get Blogger-style analytics' });
+  }
+});
+
+// Get detailed views data for graphs (protected route)
+router.get('/detailed-views', auth, async (req, res) => {
+  try {
+    const { period = '30days' } = req.query;
+    
+    let startDate = new Date();
+    let endDate = new Date();
+    
+    // Set proper date ranges based on period
+    if (period === '7days') {
+      startDate.setDate(startDate.getDate() - 7);
+    } else if (period === '30days') {
+      startDate.setDate(startDate.getDate() - 30);
+    } else if (period === '90days') {
+      startDate.setDate(startDate.getDate() - 90);
+    } else if (period === 'thisMonth') {
+      // Start from the 1st day of current month
+      startDate.setDate(1);
+    } else if (period === 'lastMonth') {
+      // Start from 1st day of last month, end on last day of last month
+      const lastMonth = new Date();
+      lastMonth.setMonth(lastMonth.getMonth() - 1);
+      startDate.setMonth(lastMonth.getMonth());
+      startDate.setDate(1);
+      endDate.setMonth(lastMonth.getMonth() + 1);
+      endDate.setDate(0); // Last day of last month
+    } else if (period === 'all') {
+      // Start from a very early date for all time
+      startDate = new Date('2020-01-01');
+    } else {
+      // Default to 30 days
+      startDate.setDate(startDate.getDate() - 30);
+    }
+    
+    startDate.setHours(0, 0, 0, 0);
+    endDate.setHours(23, 59, 59, 999);
+
+    // Get daily view counts
+    const dailyViews = await PageView.findAll({
+      attributes: [
+        [sequelize.fn('DATE', sequelize.col('viewDate')), 'date'],
+        [sequelize.fn('COUNT', sequelize.col('id')), 'views']
+      ],
+      where: {
+        isBot: false,
+        viewDate: { 
+          [Op.gte]: startDate,
+          [Op.lte]: endDate
+        }
+      },
+      group: [sequelize.fn('DATE', sequelize.col('viewDate'))],
+      order: [[sequelize.fn('DATE', sequelize.col('viewDate')), 'ASC']]
+    });
+
+    // Fill in missing dates with zero views
+    const result = [];
+    const currentDate = new Date(startDate);
+    const finalDate = period === 'lastMonth' ? endDate : new Date();
+    
+    while (currentDate <= finalDate) {
+      const dateStr = currentDate.toISOString().split('T')[0];
+      const existing = dailyViews.find(dv => dv.dataValues.date === dateStr);
+      
+      result.push({
+        date: dateStr,
+        views: existing ? parseInt(existing.dataValues.views) : 0
+      });
+      
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error getting detailed views:', error);
+    res.status(500).json({ error: 'Failed to get detailed views' });
   }
 });
 

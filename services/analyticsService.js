@@ -3,6 +3,7 @@ import { PageView, Visitor, Post } from '../models/index.js';
 import { Op } from 'sequelize';
 import { sequelize } from '../config/db.js';
 import UAParser from 'ua-parser-js';
+import { getUserIdentifier } from '../utils/userIdentification.js';
 import crypto from 'crypto';
 
 class AnalyticsService {
@@ -16,10 +17,21 @@ class AnalyticsService {
   }
 
   // Generate a unique visitor ID
-  generateVisitorId(ip, userAgent) {
-    const hash = crypto.createHash('md5');
-    hash.update(`${ip}-${userAgent}-${Date.now()}`);
-    return hash.digest('hex');
+  generateVisitorId(identityFactors, userAgent) {
+    try {
+      const hash = crypto.createHash('sha256');
+      hash.update(identityFactors);
+      const baseHash = hash.digest('hex').substring(0, 16);
+      
+      // Add timestamp component to ensure uniqueness while maintaining some consistency
+      const timeComponent = Math.floor(Date.now() / (1000 * 60 * 60 * 6)); // 6-hour windows
+      
+      return `visitor_${baseHash}_${timeComponent}`;
+    } catch (error) {
+      console.warn('Error generating visitor ID, using fallback:', error);
+      // Fallback to simpler method
+      return `visitor_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    }
   }
 
   // Detect if request is from a bot
@@ -89,7 +101,7 @@ class AnalyticsService {
   }
 
   // Record a page view
-  async recordPageView(data) {
+  async recordPageView(data, req) {
     try {
       const {
         postId,
@@ -104,19 +116,40 @@ class AnalyticsService {
         scrollDepth
       } = data;
 
+      // Get consistent user ID that matches like functionality
+      const consistentUserId = getUserIdentifier(req);
+
+      console.log('Recording page view with data:', {
+        postId, url: url?.substring(0, 100) + '...', title, 
+        visitorId: data.visitorId, sessionId, 
+        consistentUserId: consistentUserId.slice(0, 20) + '...',
+        ipAddress: ipAddress?.substring(0, 10) + '...',
+        environment: process.env.NODE_ENV
+      });
+
       // Parse user agent
       const deviceInfo = this.parseUserAgent(userAgent);
       const isBot = this.isBot(userAgent);
       
       // Skip bot traffic for analytics
       if (isBot) {
+        console.log('Skipping bot traffic:', userAgent?.substring(0, 100));
         return null;
       }
 
-      // Generate or get visitor ID
+      // Enhanced visitor ID generation for production
       let visitorId = data.visitorId;
       if (!visitorId) {
-        visitorId = this.generateVisitorId(ipAddress, userAgent);
+        // In production, create a more robust visitor ID using multiple factors
+        const identityFactors = [
+          ipAddress,
+          userAgent?.substring(0, 200), // Truncate to avoid issues
+          // Add more entropy in production
+          process.env.NODE_ENV === 'production' ? Date.now().toString() : ''
+        ].filter(Boolean).join('-');
+        
+        visitorId = this.generateVisitorId(identityFactors, userAgent);
+        console.log('Generated new visitor ID for production:', visitorId.substring(0, 10) + '...');
       }
 
       // Determine traffic source
@@ -126,16 +159,82 @@ class AnalyticsService {
       // Truncate referrer URL if it's too long for database
       const truncatedReferrer = referrer ? this.truncateString(referrer, 255) : null;
 
-      // Create page view record
+      // Validate required fields before database insert
+      if (!url) {
+        throw new Error('URL is required for page view tracking');
+      }
+
+      if (url.length > 255) {
+        throw new Error('URL too long for database storage');
+      }
+
+      // Check for duplicate page views using consistent user identification
+      // This ensures page view deduplication works the same way as like functionality
+      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000); // 5 minutes
+      
+      const recentPageView = await PageView.findOne({
+        where: {
+          [Op.or]: [
+            // Same consistent user ID, same URL within 5 minutes (primary check)
+            {
+              userId: consistentUserId,
+              url,
+              viewDate: {
+                [Op.gte]: fiveMinutesAgo
+              }
+            },
+            // Fallback: Same visitor ID for backward compatibility
+            {
+              visitorId,
+              url,
+              viewDate: {
+                [Op.gte]: fiveMinutesAgo
+              }
+            },
+            // Same session, same URL within 5 minutes (covers session-based tracking)
+            sessionId ? {
+              sessionId,
+              url,
+              viewDate: {
+                [Op.gte]: fiveMinutesAgo
+              }
+            } : null
+          ].filter(Boolean) // Remove null values
+        },
+        order: [['viewDate', 'DESC']]
+      });
+
+      if (recentPageView) {
+        const timeSinceLastView = Date.now() - recentPageView.viewDate.getTime();
+        console.log('Skipping duplicate page view within 5 minutes:', {
+          consistentUserId: consistentUserId.slice(0, 20) + '...',
+          visitorId,
+          sessionId,
+          url: url.substring(0, 50) + '...',
+          timeSinceLastView: Math.round(timeSinceLastView / 1000) + 's'
+        });
+        
+        // Update the existing page view's timestamp and user ID to show recent activity
+        await recentPageView.update({
+          viewDate: new Date(),
+          userId: consistentUserId, // Ensure consistent user ID is stored
+          timeOnPage: timeOnPage || recentPageView.timeOnPage,
+          scrollDepth: scrollDepth || recentPageView.scrollDepth
+        });
+        
+        return recentPageView; // Return the updated page view instead of creating a duplicate
+      }
+
+      // Create page view record with consistent user identification
       const pageView = await PageView.create({
         postId,
         url,
-        title,
+        title: title ? this.truncateString(title, 255) : null,
         visitorId,
         sessionId,
-        userId,
+        userId: consistentUserId, // Store consistent user ID instead of basic userId
         ipAddress,
-        userAgent,
+        userAgent: userAgent ? this.truncateString(userAgent, 1000) : null,
         browser: deviceInfo.browser,
         browserVersion: deviceInfo.browserVersion,
         operatingSystem: deviceInfo.operatingSystem,
@@ -143,10 +242,16 @@ class AnalyticsService {
         referrer: truncatedReferrer,
         referrerDomain,
         trafficSource,
-        timeOnPage,
-        scrollDepth,
+        timeOnPage: timeOnPage || 0,
+        scrollDepth: scrollDepth || 0,
         viewHour: new Date().getHours(),
         isBot
+      });
+
+      console.log('Successfully created page view with consistent user ID:', {
+        pageViewId: pageView.id,
+        consistentUserId: consistentUserId.slice(0, 20) + '...',
+        visitorId: visitorId.slice(0, 10) + '...'
       });
 
       // Update or create visitor record
@@ -165,19 +270,21 @@ class AnalyticsService {
         await this.updatePostViews(postId);
       }
 
-      // Update daily analytics
+      // Update daily analytics with enhanced deduplication
       await this.updateDailyAnalytics(postId, {
         deviceType: deviceInfo.deviceType,
         trafficSource,
         visitorId,
         browser: deviceInfo.browser,
         operatingSystem: deviceInfo.operatingSystem,
-        viewHour: new Date().getHours()
+        viewHour: new Date().getHours(),
+        sessionId: sessionId || visitorId  // Add session info for better deduplication
       });
 
       return pageView;
     } catch (error) {
       console.error('Error recording page view:', error);
+      console.error('Data that caused error:', JSON.stringify(data, null, 2));
       throw error;
     }
   }
@@ -262,14 +369,38 @@ class AnalyticsService {
       });
 
       if (!created) {
-        // Update existing analytics
-        const hourlyViews = analytics.hourlyViews || {};
+        // Update existing analytics - Handle JSON fields that might be strings
+        let hourlyViews = {};
+        try {
+          hourlyViews = typeof analytics.hourlyViews === 'string' 
+            ? JSON.parse(analytics.hourlyViews) 
+            : (analytics.hourlyViews || {});
+        } catch (e) {
+          console.warn('Failed to parse hourlyViews JSON, using empty object:', e.message);
+          hourlyViews = {};
+        }
         hourlyViews[data.viewHour] = (hourlyViews[data.viewHour] || 0) + 1;
 
-        const browsers = analytics.browsers || {};
+        let browsers = {};
+        try {
+          browsers = typeof analytics.browsers === 'string' 
+            ? JSON.parse(analytics.browsers) 
+            : (analytics.browsers || {});
+        } catch (e) {
+          console.warn('Failed to parse browsers JSON, using empty object:', e.message);
+          browsers = {};
+        }
         browsers[data.browser] = (browsers[data.browser] || 0) + 1;
 
-        const operatingSystems = analytics.operatingSystems || {};
+        let operatingSystems = {};
+        try {
+          operatingSystems = typeof analytics.operatingSystems === 'string' 
+            ? JSON.parse(analytics.operatingSystems) 
+            : (analytics.operatingSystems || {});
+        } catch (e) {
+          console.warn('Failed to parse operatingSystems JSON, using empty object:', e.message);
+          operatingSystems = {};
+        }
         operatingSystems[data.operatingSystem] = (operatingSystems[data.operatingSystem] || 0) + 1;
 
         await analytics.update({
@@ -471,7 +602,10 @@ class AnalyticsService {
   // Get top posts by views (Enhanced with likes and comments - Blogger style)
   async getTopPosts(limit = 10, period = '30days') {
     try {
+      console.log(`📊 Analytics: Getting top posts (limit: ${limit}, period: ${period})`);
+      
       const conditions = this.getPeriodConditions(period);
+      console.log('📊 Analytics: Period conditions:', conditions);
       
       // Get view counts from analytics
       const postViews = await PageView.findAll({
@@ -489,11 +623,56 @@ class AnalyticsService {
         limit: limit * 2 // Get more to filter out any missing posts
       });
 
+      console.log(`📊 Analytics: Found ${postViews.length} posts with analytics data for period ${period}`);
+
       // Get the post IDs
       const postIds = postViews.map(pv => pv.postId);
+      console.log('📊 Analytics: PostIds from analytics:', postIds);
       
+      // ENHANCED: If no analytics data for the period, use all posts with their existing stats
       if (postIds.length === 0) {
-        return [];
+        console.log('📊 No analytics data found for period, using all published posts with existing stats');
+        
+        // Get all published posts with their existing views, likes, comments
+        const allPosts = await Post.findAll({
+          where: {
+            status: 'published',
+            hidden: false
+          },
+          attributes: ['postId', 'title', 'urlSlug', 'publishedAt', 'likes', 'comments', 'views', 'category'],
+          order: [
+            // Sort by engagement score: views + likes*2 + comments*5
+            [sequelize.literal('(COALESCE(views, 0) + COALESCE(likes, 0) * 2 + COALESCE(comments, 0) * 5)'), 'DESC'],
+            ['views', 'DESC'], // Secondary sort by views
+            ['publishedAt', 'DESC'] // Tertiary sort by date
+          ],
+          limit
+        });
+
+        console.log(`📊 Found ${allPosts.length} published posts for analytics`);
+        
+        if (allPosts.length === 0) {
+          console.log('📊 No published posts found in database');
+          return [];
+        }
+        
+        const result = allPosts.map(post => ({
+          postId: post.postId,
+          title: post.title,
+          urlSlug: post.urlSlug,
+          publishedAt: post.publishedAt,
+          category: post.category,
+          views: parseInt(post.views || 0),
+          likes: parseInt(post.likes || 0),
+          comments: parseInt(post.comments || 0),
+          // Calculate engagement score (views + likes*2 + comments*5)
+          engagementScore: parseInt(post.views || 0) + parseInt(post.likes || 0) * 2 + parseInt(post.comments || 0) * 5
+        }));
+        
+        console.log(`📊 Returning ${result.length} posts with engagement data`);
+        console.log('📊 Sample post:', result[0] || 'None');
+        
+        return result;
       }
 
       // Get full post details with likes and comments from the Posts table
@@ -506,6 +685,39 @@ class AnalyticsService {
         attributes: ['postId', 'title', 'urlSlug', 'publishedAt', 'likes', 'comments', 'views', 'category'],
         limit
       });
+
+      console.log(`📊 Analytics: Found ${posts.length} matching posts in Posts table`);
+      if (posts.length === 0 && postIds.length > 0) {
+        console.log('📊 Analytics: No posts found for IDs:', postIds);
+        console.log('📊 Analytics: Falling back to all published posts');
+        
+        // Fallback to all published posts
+        const allPosts = await Post.findAll({
+          where: {
+            status: 'published',
+            hidden: false
+          },
+          attributes: ['postId', 'title', 'urlSlug', 'publishedAt', 'likes', 'comments', 'views', 'category'],
+          order: [
+            [sequelize.literal('(COALESCE(views, 0) + COALESCE(likes, 0) * 2 + COALESCE(comments, 0) * 5)'), 'DESC'],
+            ['views', 'DESC'],
+            ['publishedAt', 'DESC']
+          ],
+          limit
+        });
+        
+        return allPosts.map(post => ({
+          postId: post.postId,
+          title: post.title,
+          urlSlug: post.urlSlug,
+          publishedAt: post.publishedAt,
+          category: post.category,
+          views: parseInt(post.views || 0),
+          likes: parseInt(post.likes || 0),
+          comments: parseInt(post.comments || 0),
+          engagementScore: parseInt(post.views || 0) + parseInt(post.likes || 0) * 2 + parseInt(post.comments || 0) * 5
+        }));
+      }
 
       // Combine analytics views with post data
       const combinedData = posts.map(post => {

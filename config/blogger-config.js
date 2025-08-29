@@ -13,7 +13,7 @@ export const BLOGGER_CONFIG = {
   ACCESS_TOKEN: process.env.BLOGGER_ACCESS_TOKEN,
   CLIENT_ID: process.env.BLOGGER_CLIENT_ID,
   CLIENT_SECRET: process.env.BLOGGER_CLIENT_SECRET,
-  REDIRECT_URI: process.env.BLOGGER_REDIRECT_URI || 'http://localhost:8084/auth/blogger/callback',
+  REDIRECT_URI: process.env.BLOGGER_REDIRECT_URI || 'http://localhost:8085/auth/blogger/callback',
   
   // API Limits
   MAX_RESULTS: 50,

@@ -67,6 +67,16 @@ export const uploadImage = async (req, res) => {
     const baseUrl = config.getServerUrl();
     const url = `${baseUrl}/${relativePath}`;
 
+    // Debug logging for URL generation
+    console.log('🖼️ Cover Image Upload URL Generation Debug:', {
+      NODE_ENV: process.env.NODE_ENV,
+      PRODUCTION_URL: process.env.PRODUCTION_URL,
+      baseUrl: baseUrl,
+      filename: filename,
+      generatedUrl: url,
+      expectedProductionUrl: 'https://elankodse-backend.onrender.com'
+    });
+
     // Try to get image dimensions using sharp (optional)
     let width = null;
     let height = null;
